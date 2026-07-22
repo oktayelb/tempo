@@ -16,6 +16,8 @@ int main(){
     tempo::Function<long_process> long_process_t;
     tempo::FunctionTimer<long_process> long_process_l;
 
+
+
     long_process_t();
     long_process_l();
 }
