@@ -16,6 +16,7 @@ struct Function<func_ptr> {
 
     using  ReturnType = ret;
     using  ArgsType   = std::tuple<args...>;
+    static constexpr auto arg_count = sizeof...(args);
     static constexpr auto total_arg_size = (sizeof(args) + ... + 0);
     ReturnType operator()(args... arg) const {
         return func_ptr(arg...);
