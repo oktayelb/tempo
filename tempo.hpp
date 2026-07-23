@@ -31,7 +31,7 @@ struct FunctionTimer {
     using ArgsType   = typename FunctionType::ArgsType;
     
     inline static std::chrono::duration<double, std::milli> total_duration{0};
-    inline static unsigned int call_count{0};
+    inline static std::atomic<unsigned int> call_count{0};
     ReturnType operator()(auto... args) const {
         
         std::cout << "[Logger] Starting execution...\n";
