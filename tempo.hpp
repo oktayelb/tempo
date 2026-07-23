@@ -24,8 +24,9 @@ struct Function<func_ptr> {
 template <auto func_ptr>
 struct FunctionTimer {
 
-    using ReturnType = typename Function<func_ptr>::ReturnType;
-    using ArgsType   = typename Function<func_ptr>::ArgsType;
+    using FunctionType =  Function<func_ptr>;
+    using ReturnType = typename FunctionType::ReturnType;
+    using ArgsType   = typename FunctionType::ArgsType;
     inline static std::chrono::duration<double, std::milli> total_duration{0};
     inline static unsigned int call_count{0};
     ReturnType operator()(auto... args) const {
@@ -41,7 +42,7 @@ struct FunctionTimer {
             std::chrono::duration<double, std::milli> duration = end - start;
             total_duration += duration; 
             std::cout << "[Logger] Function Ran. Took: " << duration.count() << " ms\n";
-            std::cout << "[Logger] Total time spent on : " << total_duration.count() << " ms\n";
+            std::cout << "[Logger] Total time spent : " << total_duration.count() << " ms\n";
             std::cout << "[Logger] Call count: " << call_count << "\n";
         } 
         else {
@@ -52,7 +53,7 @@ struct FunctionTimer {
             std::chrono::duration<double, std::milli> duration = end - start;
             total_duration += duration;
             std::cout << "[Logger] Function Ran. Took: " << duration.count() << " ms\n";
-            std::cout << "[Logger] Total time spent on: " << total_duration.count() << " ms\n";
+            std::cout << "[Logger] Total time spent : " << total_duration.count() << " ms\n";
             std::cout << "[Logger] Call count: " << call_count << "\n";
 
             return result;
