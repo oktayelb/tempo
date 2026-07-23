@@ -1,6 +1,7 @@
 #include <iostream>
 #include <type_traits>
 #include <chrono>
+#include <atomic>
 using namespace std;
 
 namespace tempo{
@@ -47,6 +48,7 @@ struct FunctionTimer {
             std::cout << "[Logger] Function Ran. Took: " << duration.count() << " ms\n";
             std::cout << "[Logger] Total time spent : " << total_duration.count() << " ms\n";
             std::cout << "[Logger] Call count: " << call_count << "\n";
+            std::cout << "[Logger] Average time : " << (total_duration.count() / call_count) << " ms\n";
         } 
         else {
             const ReturnType result = func_ptr(args...);
@@ -59,21 +61,9 @@ struct FunctionTimer {
             std::cout << "[Logger] Function Ran. Took: " << duration.count() << " ms\n";
             std::cout << "[Logger] Total time spent : " << total_duration.count() << " ms\n";
             std::cout << "[Logger] Call count: " << call_count << "\n";
-
+            std::cout << "[Logger] Average time : " << (total_duration.count() / call_count) << " ms\n";
             return result;
+            }
         }
-    }
-};
-
-
-
-
+    };
 }
-
-
-
-
-
-
-
-
