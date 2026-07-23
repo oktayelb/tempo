@@ -25,7 +25,7 @@ struct Function<func_ptr> {
 //-------------------------------------------------------------------
 // C++20 sonrasında TMP daha temiz
 template <auto func_ptr>
-struct FunctionTimer {
+struct FunctionMetrics {
 
     using FunctionType =  Function<func_ptr>;
     using ReturnType = typename FunctionType::ReturnType;
@@ -67,4 +67,19 @@ struct FunctionTimer {
             }
         }
     };
+
+template <typename ClassType>
+struct ClassProfiler{
+
+    inline static  unsigned int obj_count{0};
+    template <typename... Args>
+    ClassType operator() (Args... args) {
+        obj_count++;
+        std::cout << "Profiler is here, constructor is called\n\n\n" ;
+        ClassType obj(args...);
+        std::cout << "object created\n\n";
+        return obj;
+
+};
+};
 }
