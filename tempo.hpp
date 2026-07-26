@@ -27,6 +27,10 @@ struct Function<func_ptr>{
     }
 
 };
+
+
+
+
 //-----------------------------------------------------------------------------
 
 
@@ -70,6 +74,16 @@ struct FunctionMetrics {
     inline static std::chrono::duration<double, std::milli> min_duration{0};
     inline static ArgsType min_args{};
     inline static ArgsType max_args{};
+    inline static auto& call_count = FunctionType::call_count;
+
+    static void reset() {
+        call_count.store(0);
+        total_duration = std::chrono::duration<double, std::milli>{0};
+        max_duration = std::chrono::duration<double, std::milli>{0};
+        min_duration = std::chrono::duration<double, std::milli>{0};
+        min_args = ArgsType{};
+        max_args = ArgsType{};
+    }
 
     ReturnType operator()(auto... args) const {
         ProfilerType function;
