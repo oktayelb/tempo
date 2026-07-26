@@ -1,9 +1,10 @@
+#pragma once
+
 #include <iostream>
 #include <type_traits>
 #include <chrono>
 #include <atomic>
 #include <tuple>
-using namespace std;
 
 namespace tempo{
 //-------------------------------------------------------------------
@@ -42,9 +43,16 @@ struct FunctionProfiler{
     ReturnType operator()(auto... args) const {
         std::cout << "[FunctionProfiler] Starting execution...\n";
         std::cout << "[FunctionProfiler] Total size of args:" << FunctionType::total_arg_size << " bytes\n";
-        std::cout << "[FunctionProfiler] Call count: " << FunctionType::call_count << "\n";
 
-        return function(args...);
+        if constexpr (std::is_same_v<ReturnType, void>) {
+            function(args...);
+            std::cout << "[FunctionProfiler] Call count: " << FunctionType::call_count << "\n";
+        }
+        else {
+            ReturnType result = function(args...);
+            std::cout << "[FunctionProfiler] Call count: " << FunctionType::call_count << "\n";
+            return result;
+        }
 
     }
 };
@@ -58,34 +66,64 @@ struct FunctionMetrics {
     using ArgsType   = typename ProfilerType::ArgsType;
     
     inline static std::chrono::duration<double, std::milli> total_duration{0};
+    inline static std::chrono::duration<double, std::milli> max_duration{0};
+    inline static std::chrono::duration<double, std::milli> min_duration{0};
+    inline static ArgsType min_args{};
+    inline static ArgsType max_args{};
+
     ReturnType operator()(auto... args) const {
-        
+        ProfilerType function;
         auto start = std::chrono::high_resolution_clock::now();
         if constexpr (std::is_same_v<ReturnType, void>) {
             
-            ProfilerType var;
-            var(args...);
+            function(args...);
 
             auto end = std::chrono::high_resolution_clock::now();
             std::chrono::duration<double, std::milli> duration = end - start;
-            total_duration += duration; 
+
+            total_duration += duration;
+            if (duration > max_duration){
+                max_duration = duration; 
+                max_args = ArgsType{args...};
+            }
+            if (FunctionType::call_count == 1 || duration < min_duration){
+                min_duration = duration;
+                min_args = ArgsType{args...};
+            }
             std::cout << "[FunctionMetrics] Function Ran. Took: " << duration.count() << " ms\n";
             std::cout << "[FunctionMetrics] Total time spent : " << total_duration.count() << " ms\n";
+            std::cout << "[FunctionMetrics] Min time : " << min_duration.count() << " ms\n";
+            std::cout << "[FunctionMetrics] Max time : " << max_duration.count() << " ms\n";
             std::cout << "[FunctionMetrics] Average time : " << (total_duration.count() / FunctionType::call_count) << " ms\n";
         } 
         else {
-            ProfilerType var;
-            const ReturnType result = var(args...);
+            
+            const ReturnType result = function(args...);
 
             auto end = std::chrono::high_resolution_clock::now();
             std::chrono::duration<double, std::milli> duration = end - start;
+            
             total_duration += duration;
+            if (duration > max_duration){
+                max_duration = duration; 
+                max_args = ArgsType{args...};
+            }
+            if (FunctionType::call_count == 1 || duration < min_duration){
+                min_duration = duration;
+                min_args = ArgsType{args...};
+            }
             std::cout << "[FunctionMetrics] Function Ran. Took: " << duration.count() << " ms\n";
             std::cout << "[FunctionMetrics] Total time spent : " << total_duration.count() << " ms\n";
+            std::cout << "[FunctionMetrics] Min time : " << min_duration.count() << " ms\n";
+            std::cout << "[FunctionMetrics] Max time : " << max_duration.count() << " ms\n";
             std::cout << "[FunctionMetrics] Average time : " << (total_duration.count() / FunctionType::call_count) << " ms\n";
             return result;
             }
         }
+    
+    ArgsType get_minimizers() const {return min_args;}
+    ArgsType get_maximizers() const {return max_args;}
+
     };
 
 template <typename ClassType>
