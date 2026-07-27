@@ -1,9 +1,19 @@
 #pragma once
 
+#if defined(_MSC_VER)
+#if !defined(_MSVC_LANG) || _MSVC_LANG < 202002L
+#error "tempo requires C++20 support"
+#endif
+#elif __cplusplus < 202002L
+#error "tempo requires C++20 support"
+#endif
+
 #include <iostream>
 #include <type_traits>
 #include <chrono>
 #include <atomic>
+#include <concepts>
+#include <functional>
 #include <tuple>
 #include <source_location>
 #include <utility>
@@ -18,7 +28,19 @@
 
 namespace tempo{
 //-------------------------------------------------------------------
+template <auto Value>
+concept FunctionPointer =
+    std::is_pointer_v<decltype(Value)> &&
+    std::is_function_v<std::remove_pointer_t<decltype(Value)>>;
+
+template <auto Value>
+concept MethodPointer = std::is_member_function_pointer_v<decltype(Value)>;
+
+template <auto Value>
+concept SupportedCallable = FunctionPointer<Value> || MethodPointer<Value>;
+
 template<auto Func>
+requires FunctionPointer<Func>
 struct Function;
 
 template <typename ret, typename... args, ret(*func_ptr)(args...)>
@@ -35,12 +57,13 @@ struct Function<func_ptr>{
 
     ReturnType operator()(args... arg) const {
         call_count++;
-        return func_ptr(arg...);
+        return std::invoke(func_ptr, arg...);
     }
 
 };
 
 template<auto MethodValue>
+requires MethodPointer<MethodValue>
 struct Method;
 
 template <typename ClassName,typename ret, typename...args , ret(ClassName::*method)(args...)>
@@ -57,7 +80,7 @@ struct Method<method>{
 
     ReturnType operator()(ClassName& instance, args... arg) const {
         call_count++;
-        return (instance.*method)(arg...);
+        return std::invoke(method, instance, arg...);
     }
 };
 
@@ -75,20 +98,30 @@ struct Method<method>{
 
     ReturnType operator()(const ClassName& instance, args... arg) const {
         call_count++;
-        return (instance.*method)(arg...);
+        return std::invoke(method, instance, arg...);
     }
 };
 
 template<auto CallableValue>
-using CallableImplementation = std::conditional_t<
-    std::is_member_function_pointer_v<decltype(CallableValue)>,
-    Method<CallableValue>,
-    Function<CallableValue>
->;
+requires SupportedCallable<CallableValue>
+struct CallableImplementation;
 
 template<auto CallableValue>
-struct Callable : CallableImplementation<CallableValue> {
-    using CallableType = CallableImplementation<CallableValue>;
+requires FunctionPointer<CallableValue>
+struct CallableImplementation<CallableValue> {
+    using Type = Function<CallableValue>;
+};
+
+template<auto CallableValue>
+requires MethodPointer<CallableValue>
+struct CallableImplementation<CallableValue> {
+    using Type = Method<CallableValue>;
+};
+
+template<auto CallableValue>
+requires SupportedCallable<CallableValue>
+struct Callable : CallableImplementation<CallableValue>::Type {
+    using CallableType = typename CallableImplementation<CallableValue>::Type;
     using CallableType::operator();
 };
 
@@ -116,6 +149,7 @@ struct Variable <t_obj>{
 
 // C++20 sonrasında TMP daha temiz
 template <auto CallableValue>
+requires SupportedCallable<CallableValue>
 struct CallableProfiler{
 
     using CallableType = Callable<CallableValue>;
@@ -129,7 +163,9 @@ struct CallableProfiler{
     CallableType callable;
 
 
-    ReturnType call_at(SourceLocation location, auto&&... args) const {
+    ReturnType call_at(SourceLocation location, auto&&... args) const
+        requires std::invocable<CallableType, decltype(args)...>
+    {
         last_call_location = location;
         std::cout << "[CallableProfiler] Starting execution...\n";
         std::cout << "[CallableProfiler] Call location: " << location.file_name() << ":" << location.line() << "\n";
@@ -148,12 +184,15 @@ struct CallableProfiler{
 
     }
 
-    ReturnType operator()(auto&&... args) const {
+    ReturnType operator()(auto&&... args) const
+        requires std::invocable<CallableType, decltype(args)...>
+    {
         return call_at(SourceLocation::current(), std::forward<decltype(args)>(args)...);
     }
 };
 //-------------------------------------------------------------------
 template <auto CallableValue>
+requires SupportedCallable<CallableValue>
 struct CallableMetrics {
 
     using ProfilerType = CallableProfiler<CallableValue>;
@@ -191,7 +230,9 @@ struct CallableMetrics {
         last_call_location = SourceLocation{};
     }
 
-    ReturnType call_at(SourceLocation location, auto&&... args) const {
+    ReturnType call_at(SourceLocation location, auto&&... args) const
+        requires std::invocable<CallableType, decltype(args)...>
+    {
         last_call_location = location;
         ProfilerType profiler;
         auto start = std::chrono::high_resolution_clock::now();
@@ -246,7 +287,9 @@ struct CallableMetrics {
             }
         }
 
-    ReturnType operator()(auto&&... args) const {
+    ReturnType operator()(auto&&... args) const
+        requires std::invocable<CallableType, decltype(args)...>
+    {
         return call_at(SourceLocation::current(), std::forward<decltype(args)>(args)...);
     }
 private:
@@ -262,6 +305,10 @@ public:
     };
 
 template <typename ClassType>
+concept IsClass = std::is_class_v<ClassType>;
+
+template <typename ClassType>
+requires IsClass<ClassType>
 struct ConstructorProfiler{
 
     inline static  unsigned int obj_count{0};
