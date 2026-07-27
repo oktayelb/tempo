@@ -35,7 +35,36 @@ struct Function<func_ptr>{
     }
 
 };
+// metod versiyonu
+template <typename ClassName,typename ret, typename...args , ret(ClassName::*method)(args...)>
+struct Function<method>{
 
+    using ReturnType = ret;
+    using ArgsType = std::tuple<args...>;   
+    static constexpr auto arg_count = sizeof...(args);
+    static constexpr auto total_arg_size = (sizeof(args) +  ... +  0);
+    inline static std::atomic<unsigned int> call_count{0};
+
+    ReturnType operator()(ClassName& instance, args... arg) const {
+        call_count++;
+        return (instance.*method)(arg...);
+    }
+};
+// const için aynılısı
+template <typename ClassName,typename ret, typename...args , ret(ClassName::*method)(args...) const>
+struct Function<method>{
+
+    using ReturnType = ret;
+    using ArgsType = std::tuple<args...>;
+    static constexpr auto arg_count = sizeof...(args);
+    static constexpr auto total_arg_size = (sizeof(args) +  ... +  0);
+    inline static std::atomic<unsigned int> call_count{0};
+
+    ReturnType operator()(const ClassName& instance, args... arg) const {
+        call_count++;
+        return (instance.*method)(arg...);
+    }
+};
 
 
 
