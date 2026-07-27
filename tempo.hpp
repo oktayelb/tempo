@@ -8,23 +8,27 @@
 #include <source_location>
 #include <utility>
 
-#define TEMPO_FUNCTION(callable) ::tempo::Function<&callable>
-#define TEMPO_FUNCTION_PROFILER(callable) ::tempo::FunctionProfiler<&callable>
-#define TEMPO_FUNCTION_METRICS(callable) ::tempo::FunctionMetrics<&callable>
+#define TEMPO_CALLABLE(callable) ::tempo::Callable<&callable>
+#define TEMPO_FUNCTION(function) ::tempo::Function<&function>
+#define TEMPO_METHOD(method) ::tempo::Method<&method>
+#define TEMPO_CALLABLE_PROFILER(callable) ::tempo::CallableProfiler<&callable>
+#define TEMPO_CALLABLE_METRICS(callable) ::tempo::CallableMetrics<&callable>
 #define TEMPO_PROFILE_CALL(profiler, ...) (profiler).call_at(::std::source_location::current() __VA_OPT__(,) __VA_ARGS__)
 #define TEMPO_METRICS_CALL(metrics, ...) (metrics).call_at(::std::source_location::current() __VA_OPT__(,) __VA_ARGS__)
 
 namespace tempo{
 //-------------------------------------------------------------------
-// İlk tanım her zaman bu şekilde, structta <> yok
 template<auto Func>
 struct Function;
-// İkinci tanımda da <> olmak zorunda
+
 template <typename ret, typename... args, ret(*func_ptr)(args...)>
 struct Function<func_ptr>{
 
     using  ReturnType = ret;
     using  ArgsType   = std::tuple<args...>;
+    using  ClassType  = void;
+    static constexpr bool is_member = false;
+    static constexpr bool is_const_member = false;
     static constexpr auto arg_count = sizeof...(args);
     static constexpr auto total_arg_size = (sizeof(args) + ... + 0);
     inline static std::atomic<unsigned int> call_count{0};
@@ -35,12 +39,18 @@ struct Function<func_ptr>{
     }
 
 };
-// metod versiyonu
+
+template<auto MethodValue>
+struct Method;
+
 template <typename ClassName,typename ret, typename...args , ret(ClassName::*method)(args...)>
-struct Function<method>{
+struct Method<method>{
 
     using ReturnType = ret;
-    using ArgsType = std::tuple<args...>;   
+    using ArgsType = std::tuple<args...>;
+    using ClassType = ClassName;
+    static constexpr bool is_member = true;
+    static constexpr bool is_const_member = false;
     static constexpr auto arg_count = sizeof...(args);
     static constexpr auto total_arg_size = (sizeof(args) +  ... +  0);
     inline static std::atomic<unsigned int> call_count{0};
@@ -50,12 +60,15 @@ struct Function<method>{
         return (instance.*method)(arg...);
     }
 };
-// const için aynılısı
+
 template <typename ClassName,typename ret, typename...args , ret(ClassName::*method)(args...) const>
-struct Function<method>{
+struct Method<method>{
 
     using ReturnType = ret;
     using ArgsType = std::tuple<args...>;
+    using ClassType = ClassName;
+    static constexpr bool is_member = true;
+    static constexpr bool is_const_member = true;
     static constexpr auto arg_count = sizeof...(args);
     static constexpr auto total_arg_size = (sizeof(args) +  ... +  0);
     inline static std::atomic<unsigned int> call_count{0};
@@ -66,40 +79,70 @@ struct Function<method>{
     }
 };
 
+template<auto CallableValue>
+using CallableImplementation = std::conditional_t<
+    std::is_member_function_pointer_v<decltype(CallableValue)>,
+    Method<CallableValue>,
+    Function<CallableValue>
+>;
+
+template<auto CallableValue>
+struct Callable : CallableImplementation<CallableValue> {
+    using CallableType = CallableImplementation<CallableValue>;
+    using CallableType::operator();
+};
 
 
-//-----------------------------------------------------------------------------
+/*-----------------------------------------------------------------------------
+template <typename Type, Type var>
+struct Variable{};
+
+
+template <typename Type , Type t_obj >
+struct Variable <t_obj>{
+
+    using TypeName = typename Type;
+
+
+};
+
+
+
+
+//-----------------------------------------------------------------------------*/
+
+
 
 
 // C++20 sonrasında TMP daha temiz
-template <auto func_ptr>
-struct FunctionProfiler{
+template <auto CallableValue>
+struct CallableProfiler{
 
-    using FunctionType = Function<func_ptr>;
-    using ReturnType = typename FunctionType::ReturnType;
-    using ArgsType = typename FunctionType::ArgsType;
+    using CallableType = Callable<CallableValue>;
+    using ReturnType = typename CallableType::ReturnType;
+    using ArgsType = typename CallableType::ArgsType;
 
     using SourceLocation = std::source_location;
     inline static SourceLocation last_call_location{};
     static SourceLocation get_last_call_location() { return last_call_location; }
     
-    FunctionType function;
+    CallableType callable;
 
 
     ReturnType call_at(SourceLocation location, auto&&... args) const {
         last_call_location = location;
-        std::cout << "[FunctionProfiler] Starting execution...\n";
-        std::cout << "[FunctionProfiler] Call location: " << location.file_name() << ":" << location.line() << "\n";
-        std::cout << "[FunctionProfiler] Caller function: " << location.function_name() << "\n";
-        std::cout << "[FunctionProfiler] Total size of args:" << FunctionType::total_arg_size << " bytes\n";
+        std::cout << "[CallableProfiler] Starting execution...\n";
+        std::cout << "[CallableProfiler] Call location: " << location.file_name() << ":" << location.line() << "\n";
+        std::cout << "[CallableProfiler] Caller function: " << location.function_name() << "\n";
+        std::cout << "[CallableProfiler] Total size of args:" << CallableType::total_arg_size << " bytes\n";
 
         if constexpr (std::is_same_v<ReturnType, void>) {
-            function(std::forward<decltype(args)>(args)...);
-            std::cout << "[FunctionProfiler] Call count: " << FunctionType::call_count << "\n";
+            callable(std::forward<decltype(args)>(args)...);
+            std::cout << "[CallableProfiler] Call count: " << CallableType::call_count << "\n";
         }
         else {
-            ReturnType result = function(std::forward<decltype(args)>(args)...);
-            std::cout << "[FunctionProfiler] Call count: " << FunctionType::call_count << "\n";
+            ReturnType result = callable(std::forward<decltype(args)>(args)...);
+            std::cout << "[CallableProfiler] Call count: " << CallableType::call_count << "\n";
             return result;
         }
 
@@ -110,13 +153,13 @@ struct FunctionProfiler{
     }
 };
 //-------------------------------------------------------------------
-template <auto func_ptr>
-struct FunctionMetrics {
+template <auto CallableValue>
+struct CallableMetrics {
 
-    using ProfilerType = FunctionProfiler<func_ptr>;
-    using FunctionType = Function<func_ptr>;
-    using ReturnType = typename ProfilerType::ReturnType;
-    using ArgsType   = typename ProfilerType::ArgsType;
+    using ProfilerType = CallableProfiler<CallableValue>;
+    using CallableType = Callable<CallableValue>;
+    using ReturnType = typename CallableType::ReturnType;
+    using ArgsType   = typename CallableType::ArgsType;
     using SourceLocation = std::source_location;
     
     inline static std::chrono::duration<double, std::milli> total_duration{0};
@@ -124,13 +167,13 @@ struct FunctionMetrics {
     inline static std::chrono::duration<double, std::milli> min_duration{0};
     inline static ArgsType min_args{};
     inline static ArgsType max_args{};
-    inline static auto& call_count = FunctionType::call_count;
+    inline static auto& call_count = CallableType::call_count;
     inline static SourceLocation last_call_location{};
 
     static SourceLocation get_last_call_location() { return last_call_location; }
 
     static ArgsType make_args_tuple(auto&&... args) {
-        if constexpr (std::is_member_function_pointer_v<decltype(func_ptr)>) {
+        if constexpr (std::is_member_function_pointer_v<decltype(CallableValue)>) {
             return make_args_tuple_without_instance(std::forward<decltype(args)>(args)...);
         }
         else {
@@ -150,11 +193,11 @@ struct FunctionMetrics {
 
     ReturnType call_at(SourceLocation location, auto&&... args) const {
         last_call_location = location;
-        ProfilerType function;
+        ProfilerType profiler;
         auto start = std::chrono::high_resolution_clock::now();
         if constexpr (std::is_same_v<ReturnType, void>) {
             
-            function.call_at(location, std::forward<decltype(args)>(args)...);
+            profiler.call_at(location, std::forward<decltype(args)>(args)...);
 
             auto end = std::chrono::high_resolution_clock::now();
             std::chrono::duration<double, std::milli> duration = end - start;
@@ -164,21 +207,21 @@ struct FunctionMetrics {
                 max_duration = duration; 
                 max_args = make_args_tuple(std::forward<decltype(args)>(args)...);
             }
-            if (FunctionType::call_count == 1 || duration < min_duration){
+            if (CallableType::call_count == 1 || duration < min_duration){
                 min_duration = duration;
                 min_args = make_args_tuple(std::forward<decltype(args)>(args)...);
             }
-            std::cout << "[FunctionMetrics] Function Ran. Took: " << duration.count() << " ms\n";
-            std::cout << "[FunctionMetrics] Call location: " << location.file_name() << ":" << location.line() << "\n";
-            std::cout << "[FunctionMetrics] Caller function: " << location.function_name() << "\n";
-            std::cout << "[FunctionMetrics] Total time spent : " << total_duration.count() << " ms\n";
-            std::cout << "[FunctionMetrics] Min time : " << min_duration.count() << " ms\n";
-            std::cout << "[FunctionMetrics] Max time : " << max_duration.count() << " ms\n";
-            std::cout << "[FunctionMetrics] Average time : " << (total_duration.count() / FunctionType::call_count) << " ms\n";
+            std::cout << "[CallableMetrics] Callable ran. Took: " << duration.count() << " ms\n";
+            std::cout << "[CallableMetrics] Call location: " << location.file_name() << ":" << location.line() << "\n";
+            std::cout << "[CallableMetrics] Caller function: " << location.function_name() << "\n";
+            std::cout << "[CallableMetrics] Total time spent : " << total_duration.count() << " ms\n";
+            std::cout << "[CallableMetrics] Min time : " << min_duration.count() << " ms\n";
+            std::cout << "[CallableMetrics] Max time : " << max_duration.count() << " ms\n";
+            std::cout << "[CallableMetrics] Average time : " << (total_duration.count() / CallableType::call_count) << " ms\n";
         } 
         else {
             
-            const ReturnType result = function.call_at(location, std::forward<decltype(args)>(args)...);
+            const ReturnType result = profiler.call_at(location, std::forward<decltype(args)>(args)...);
 
             auto end = std::chrono::high_resolution_clock::now();
             std::chrono::duration<double, std::milli> duration = end - start;
@@ -188,17 +231,17 @@ struct FunctionMetrics {
                 max_duration = duration; 
                 max_args = make_args_tuple(std::forward<decltype(args)>(args)...);
             }
-            if (FunctionType::call_count == 1 || duration < min_duration){
+            if (CallableType::call_count == 1 || duration < min_duration){
                 min_duration = duration;
                 min_args = make_args_tuple(std::forward<decltype(args)>(args)...);
             }
-            std::cout << "[FunctionMetrics] Function Ran. Took: " << duration.count() << " ms\n";
-            std::cout << "[FunctionMetrics] Call location: " << location.file_name() << ":" << location.line() << "\n";
-            std::cout << "[FunctionMetrics] Caller function: " << location.function_name() << "\n";
-            std::cout << "[FunctionMetrics] Total time spent : " << total_duration.count() << " ms\n";
-            std::cout << "[FunctionMetrics] Min time : " << min_duration.count() << " ms\n";
-            std::cout << "[FunctionMetrics] Max time : " << max_duration.count() << " ms\n";
-            std::cout << "[FunctionMetrics] Average time : " << (total_duration.count() / FunctionType::call_count) << " ms\n";
+            std::cout << "[CallableMetrics] Callable ran. Took: " << duration.count() << " ms\n";
+            std::cout << "[CallableMetrics] Call location: " << location.file_name() << ":" << location.line() << "\n";
+            std::cout << "[CallableMetrics] Caller function: " << location.function_name() << "\n";
+            std::cout << "[CallableMetrics] Total time spent : " << total_duration.count() << " ms\n";
+            std::cout << "[CallableMetrics] Min time : " << min_duration.count() << " ms\n";
+            std::cout << "[CallableMetrics] Max time : " << max_duration.count() << " ms\n";
+            std::cout << "[CallableMetrics] Average time : " << (total_duration.count() / CallableType::call_count) << " ms\n";
             return result;
             }
         }
