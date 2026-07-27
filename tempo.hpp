@@ -311,7 +311,7 @@ template <typename ClassType>
 requires IsClass<ClassType>
 struct ConstructorProfiler{
 
-    inline static  unsigned int obj_count{0};
+    inline static std::atomic<unsigned int> obj_count{0};
     template <typename... Args>
     ClassType operator() (Args... args) {
         ClassType obj(args...);
