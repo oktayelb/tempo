@@ -5,26 +5,51 @@ A compile-time function abstractor built with template metaprogramming.
 Point tempo at a function or method pointer and it gives you back a type that
 knows the signature — return type, parameter types, arity, whether it is a
 member, whether it is const — plus optional call counts, timings and the
-argument values behind your slowest call. The wrapper takes forwarding
-references and returns the call expression directly, so it adds no copies and
-no moves of its own: the runtime cost is the metric you asked for and nothing
-else.
+argument values behind your slowest call. The wrapper returns the call
+expression directly rather than through a named local, so the return value is
+never copied or moved and even immovable return types pass through.
 
 ```cpp
 #include "tempo.hpp"
 
-int fibonacci(unsigned n);
+namespace impl { int fibonacci(unsigned n); }
 
-using Fib = TEMPO_CALLABLE_METRICS(fibonacci);
-Fib fib;
+TEMPO_INSTRUMENT(impl::fibonacci, fibonacci);
 
-TEMPO_METRICS_CALL(fib, 26);
-TEMPO_METRICS_CALL(fib, 32);
+fibonacci(26);
+fibonacci(32);
 
-std::get<0>(fib.get_maximizers());   // 32 — the input that was slowest
+std::get<0>(fibonacci.get_maximizers());   // 32 — the input that was slowest
 ```
 
 Header-only. Requires C++20 (concepts, `std::source_location`, `inline static`).
+
+## Instrumenting without touching call sites
+
+`TEMPO_INSTRUMENT` names a function once, at its declaration, and leaves every
+call site alone. A variable and a function cannot share a name in one scope but
+they can across scopes, so the function lives in a nested namespace and the
+wrapper takes its name outside; `fibonacci(26)` then resolves to the wrapper.
+
+The call site is still recorded. For free functions and callable objects,
+`operator()` is declared with the callable's exact parameter list plus a
+trailing `std::source_location` that defaults to `current()` — and because that
+parameter pack comes from the class template rather than being deduced from the
+call, the default argument is evaluated at the caller. A deduced pack cannot do
+this, which is why `TEMPO_METRICS_CALL` exists at all.
+
+Define `TEMPO_ENABLED` as `0` before including and every instrumented name
+collapses to a plain function pointer that the optimizer inlines away, so the
+same source builds with tempo entirely absent.
+
+Member functions cannot use the seam — `service.handle(...)` offers no free name
+for a wrapper to shadow — so they keep the variadic `operator()` (which still
+accepts `ClassName&`, `ClassName*`, `reference_wrapper` and smart pointers) and
+`TEMPO_METRICS_CALL` for call-site locations.
+
+Note that only the outer call is counted: a recursive function calls itself
+through its own name inside the namespace, which is the real function, not the
+wrapper.
 
 ## Examples
 
@@ -42,6 +67,7 @@ cd examples && make run
 | `06_worst_input.cpp` | finding the input that made a function slow |
 | `07_lambdas.cpp` | lambdas, functors and `std::function` |
 | `08_report.cpp` | aggregated summary, quiet mode, threads |
+| `09_instrument.cpp` | instrument once, call sites unchanged |
 
 Lambdas and functors are objects, not pointers, so they cannot be template
 arguments. Use the factories instead of the macros:

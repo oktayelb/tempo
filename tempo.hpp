@@ -39,6 +39,35 @@
 #define TEMPO_PRINT_ENABLED 1
 #endif
 
+// Master switch for TEMPO_INSTRUMENT. Define it as 0 in release builds and every
+// instrumented name collapses to a plain function pointer, which the optimizer
+// inlines away to nothing. Define it BEFORE the include.
+#ifndef TEMPO_ENABLED
+#define TEMPO_ENABLED 1
+#endif
+
+// Instrument a function once, at its declaration, and leave every call site
+// alone.
+//
+//     namespace impl { int fibonacci(unsigned n); }
+//     TEMPO_INSTRUMENT(impl::fibonacci, fibonacci);
+//
+//     fibonacci(26);   // unchanged: resolves to the wrapper's operator()
+//
+// A variable and a function cannot share a name in one scope, but they can
+// across scopes -- so the function lives in a nested namespace and the wrapper
+// takes its name outside. Because the wrapper's operator() carries a defaulted
+// source_location (see detail::FixedSignatureCall), the call site is still
+// recorded even though nothing at the call site changed.
+//
+// Member functions cannot use this: service.handle(...) offers no free name for
+// a wrapper to shadow. Use TEMPO_CALLABLE_METRICS and an explicit call for those.
+#if TEMPO_ENABLED
+#define TEMPO_INSTRUMENT(function, alias) inline ::tempo::CallableMetrics<&function> alias{}
+#else
+#define TEMPO_INSTRUMENT(function, alias) inline constexpr auto alias = &function
+#endif
+
 #define TEMPO_CALLABLE(callable) ::tempo::Callable<&callable>
 #define TEMPO_FUNCTION(function) ::tempo::Function<&function>
 #define TEMPO_METHOD(method) ::tempo::Method<&method>
@@ -479,18 +508,86 @@ template <auto CallableValue>
 requires SupportedCallable<CallableValue>
 using CallableProfiler = Profiler<Callable<CallableValue>>;
 //-------------------------------------------------------------------
+namespace detail {
+
+// The two shapes of operator() that Metrics can expose. Which one you get
+// depends on whether the wrapped callable is a member function, and the choice
+// is not cosmetic -- it decides whether a bare call can capture its own call
+// site.
+//
+// Only ONE of them is ever inherited. Having both would be worse than useless:
+// for fib(26) with a parameter of type unsigned, the variadic template binds
+// int&& exactly while the fixed signature needs an int -> unsigned conversion,
+// so the template would win overload resolution and silently take the location
+// away again.
+
+// Used for member functions. The caller supplies the instance, and we keep
+// accepting every form std::invoke understands: ClassName&, ClassName*,
+// std::reference_wrapper, smart pointers. A fixed signature cannot express that,
+// and members cannot use the TEMPO_INSTRUMENT seam anyway (there is no free name
+// for a wrapper variable to shadow), so nothing is lost by staying variadic.
+template <typename Derived, typename CallableType>
+struct VariadicCall {
+    typename CallableType::ReturnType operator()(auto&&... args) const
+        requires std::invocable<const CallableType&, decltype(args)...>
+    {
+        return static_cast<const Derived&>(*this).call_at(
+            std::source_location::current(), std::forward<decltype(args)>(args)...);
+    }
+};
+
+// Used for free functions and callable objects: the callable's exact parameter
+// list, plus a trailing source_location that defaults to current().
+//
+// The reason this works is that Args... comes from the enclosing class template
+// and is already fixed -- it is NOT deduced from the call. That makes this an
+// ordinary function with N+1 parameters whose last one has a default argument,
+// and a default argument is evaluated AT THE CALL SITE. So a plain fib(26) now
+// records the caller's file and line, with no macro. You cannot do this with a
+// deduced pack: a default argument may not follow one.
+//
+// The price is that parameters arrive by their declared types rather than by
+// forwarding reference. For reference parameters that costs exactly nothing; for
+// a by-value parameter handed an lvalue it costs one extra move.
+template <typename Derived, typename CallableType, typename ArgsTuple>
+struct FixedSignatureCall;
+
+template <typename Derived, typename CallableType, typename... Args>
+struct FixedSignatureCall<Derived, CallableType, std::tuple<Args...>> {
+    typename CallableType::ReturnType operator()(
+        Args... args,
+        std::source_location location = std::source_location::current()) const
+    {
+        return static_cast<const Derived&>(*this).call_at(
+            location, static_cast<Args&&>(args)...);
+    }
+};
+
+template <typename Derived, typename CallableType>
+using CallOperator = std::conditional_t<
+    CallableType::is_member,
+    VariadicCall<Derived, CallableType>,
+    FixedSignatureCall<Derived, CallableType, typename CallableType::ArgsType>>;
+
+} // namespace detail
+
 // The measuring side does NOT delegate to Profiler. Profiler writes five lines on
 // every call; if Metrics went through it, that I/O would land inside the
 // measurement window and a single call's "duration" would start with a few
 // microseconds of cout cost. The only thing timed here is the call itself;
 // reporting happens after the clock has stopped.
 template <typename WrapperType>
-struct Metrics {
+struct Metrics : detail::CallOperator<Metrics<WrapperType>, WrapperType> {
 
     using CallableType = WrapperType;
     using ReturnType = typename CallableType::ReturnType;
     using ArgsType   = typename CallableType::ArgsType;
     using SourceLocation = std::source_location;
+
+    // Metrics declares no operator() of its own -- it inherits exactly one, so
+    // there is never an overload to resolve between. See detail::CallOperator.
+    using CallOperatorBase = detail::CallOperator<Metrics<WrapperType>, WrapperType>;
+    using CallOperatorBase::operator();
     // steady_clock, NOT high_resolution_clock. On libstdc++ high_resolution_clock
     // is an alias for system_clock (is_steady == false): if the wall clock is
     // stepped backwards by NTP, the difference between two Clock::now() calls
@@ -628,12 +725,6 @@ public:
         return callable(std::forward<decltype(args)>(args)...);
     }
 
-    ReturnType operator()(auto&&... args) const
-        requires std::invocable<const CallableType&, decltype(args)...>
-    {
-        return call_at(SourceLocation::current(), std::forward<decltype(args)>(args)...);
-    }
-
     StoredArgsType get_minimizers() const {
         const std::lock_guard<std::mutex> guard{stats_mutex};
         return min_args;
@@ -737,7 +828,9 @@ auto profile(F&& target) {
 template <typename F>
 requires CallableObject<std::decay_t<F>>
 auto measure(F&& target) {
-    return Metrics<Functor<std::decay_t<F>>>{wrap(std::forward<F>(target))};
+    // The leading {} initializes the inherited call-operator base, which is
+    // empty. Metrics is still an aggregate; it just has one more subobject now.
+    return Metrics<Functor<std::decay_t<F>>>{{}, wrap(std::forward<F>(target))};
 }
 //-------------------------------------------------------------------
 
