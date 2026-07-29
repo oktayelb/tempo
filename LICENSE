@@ -1,132 +1,21 @@
-tempo — Source-Available License (No Competing Library)
+MIT License
 
 Copyright (c) 2026 Oktay Elibüyük
-All rights reserved.
 
-Use tempo in your own software freely, including commercially, and ship that
-software to whomever you like. What you may not do without permission is
-repackage tempo itself — modified, extended, renamed or not — and distribute
-that as a library for other developers to use. See Sections 2 and 3.
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-This is NOT an open-source license as defined by the Open Source Initiative,
-because Section 3 restricts one particular field of use.
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
 
-
-1. DEFINITIONS
-
-   "Software" means the tempo library, including tempo.hpp, the examples, the
-   documentation, and any other file in this repository.
-
-   "You" means the individual or legal entity exercising the permissions granted
-   by this License.
-
-   "Derivative Work" means any work based on the Software, including
-   modifications, extensions, additional features, bug fixes, translations, and
-   ports to other languages.
-
-   "Distribute" means to make available to any third party, by any means and in
-   any form, source or compiled, whether or not for a fee.
-
-   "Your Software" means a work that uses the Software to do its own job — an
-   application, a service, a game, a tool, or a library whose purpose is
-   something other than providing the Software's functionality to other
-   developers. The Software being present inside it, even substantially, does not
-   by itself make it a Developer Library.
-
-   "Developer Library" means the Software or a Derivative Work distributed so
-   that third parties can use it as a general-purpose profiling, timing,
-   instrumentation or callable-abstraction facility in code of their own. This
-   covers distributing it as a library, framework, SDK, package, module or
-   header collection, under the name "tempo" or under any other name, and
-   covers publishing it to a package registry or public repository as such.
-
-
-2. WHAT YOU MAY DO, FREE OF CHARGE
-
-   The copyright holder grants You a worldwide, royalty-free, non-exclusive
-   license to:
-
-   (a) use and run the Software for any purpose, including commercial purposes;
-
-   (b) copy the Software and store it on your own systems;
-
-   (c) study the Software and its source code without restriction;
-
-   (d) modify the Software and create Derivative Works, including adding new
-       features, fixing defects, and adapting it to your needs;
-
-   (e) Distribute the Software, and Derivative Works, as part of Your Software,
-       in source or compiled form, to anyone, commercially or otherwise, subject
-       only to the conditions in Section 4.
-
-   No permission needs to be requested for any of the above. In particular,
-   shipping a product, a service or a library of your own that happens to be
-   built with tempo inside it is expressly allowed.
-
-
-3. WHAT REQUIRES PERMISSION
-
-   You may not Distribute the Software or a Derivative Work as a Developer
-   Library without the prior written permission of the copyright holder.
-
-   The distinction is what is being handed over. Giving someone software that
-   uses tempo is fine. Giving someone tempo, or your improved version of tempo,
-   for them to build with is what this Section reserves — whatever it is called
-   and whether or not it is sold.
-
-   Permission is granted or refused at the copyright holder's sole discretion,
-   and may be granted on terms agreed in writing at that time.
-
-   To request permission, contact: oktayelb@gmail.com. Requests are welcome, and
-   contributions offered back to the original project are welcome without any
-   request at all.
-
-
-4. CONDITIONS
-
-   (a) You must retain the copyright notice above and a copy of this License in
-       all copies of the Software's source code, including copies carried inside
-       Your Software.
-
-   (b) When You Distribute Your Software only in compiled form, You must include
-       the notice above wherever You customarily acknowledge third-party
-       components, such as an "open source notices" or "credits" screen or file.
-       No other attribution is required.
-
-   (c) If You modify the Software, You must mark the modified files as changed,
-       so that they are not mistaken for the original.
-
-   (d) If permission is granted under Section 3, the terms of that written
-       permission govern that distribution, and this License continues to govern
-       everything else.
-
-
-5. RESERVATION OF RIGHTS
-
-   All rights not expressly granted in Section 2 are reserved by the copyright
-   holder. No rights are granted under any patent or trademark, and no right is
-   granted to use the name "tempo" or the name of the copyright holder to
-   endorse or promote any product or Derivative Work.
-
-
-6. NO WARRANTY
-
-   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-   FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT.
-
-
-7. LIMITATION OF LIABILITY
-
-   IN NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES, OR
-   OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE,
-   ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-   DEALINGS IN THE SOFTWARE.
-
-
-8. TERMINATION
-
-   This License terminates automatically if You breach any of its terms. It is
-   reinstated if You cure the breach within 30 days of becoming aware of it.
-   Upon termination You must cease distributing the Software; Sections 5, 6 and
-   7 survive termination.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

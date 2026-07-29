@@ -1,13 +1,12 @@
 # tempo
 
-A compile-time function abstractor built with template metaprogramming.
+Header-only C++20 instrumentation that remembers the arguments behind your
+slowest call.
 
-Point tempo at a function or method pointer and it gives you back a type that
-knows the signature — return type, parameter types, arity, whether it is a
-member, whether it is const — plus optional call counts, timings and the
-argument values behind your slowest call. The wrapper returns the call
-expression directly rather than through a named local, so the return value is
-never copied or moved and even immovable return types pass through.
+A profiler tells you *that* a function is slow. tempo tells you *what made it*
+slow: it keeps the argument values of the fastest and slowest calls it has seen,
+so the input that produced your worst case is still there when you go looking for
+it.
 
 ```cpp
 #include "tempo.hpp"
@@ -22,7 +21,14 @@ fibonacci(32);
 std::get<0>(fibonacci.get_maximizers());   // 32 — the input that was slowest
 ```
 
-Header-only. Requires C++20 (concepts, `std::source_location`, `inline static`).
+Point tempo at a function or method pointer and you also get a type that knows
+the signature — return type, parameter types, arity, whether it is a member,
+whether it is const — along with call counts and timings. The wrapper returns the
+call expression directly rather than through a named local, so the return value
+is never copied or moved and even immovable return types pass through.
+
+MIT licensed. Header-only, nothing to link. Requires C++20 (concepts,
+`std::source_location`, `inline static`).
 
 ## Building
 
