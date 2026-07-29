@@ -154,6 +154,29 @@ struct ArgsAreStorable<std::tuple<Ts...>>
     : std::bool_constant<(std::copy_constructible<std::decay_t<Ts>> && ...) &&
                          (std::default_initializable<std::decay_t<Ts>> && ...)> {};
 
+// The same question for a noexcept callable, where the answer has to be
+// stronger.
+//
+// Capturing an argument means copying it, and a copy that allocates can throw --
+// inside a wrapper that has just promised its callers it will not. tempo will
+// not turn a noexcept function into one that terminates on a full heap, so for
+// those callables capture is restricted to argument types it can copy, store and
+// overwrite without throwing. Everything else switches capture off, exactly as
+// a move-only parameter already does, and says so through tracks_args.
+//
+// Assignment is in the list because the stored tuple is overwritten in place
+// every time a new extreme is seen, not just constructed once.
+template <typename Tuple>
+struct ArgsAreNothrowStorable;
+
+template <typename... Ts>
+struct ArgsAreNothrowStorable<std::tuple<Ts...>>
+    : std::bool_constant<
+          (std::is_nothrow_default_constructible_v<std::decay_t<Ts>> && ...) &&
+          (std::is_nothrow_copy_constructible_v<std::decay_t<Ts>>    && ...) &&
+          (std::is_nothrow_copy_assignable_v<std::decay_t<Ts>>       && ...) &&
+          (std::is_nothrow_move_assignable_v<std::decay_t<Ts>>       && ...)> {};
+
 // A template-dependent "false", so the static_assert only fires when the
 // template is actually instantiated. A plain "false" would make the compiler
 // reject it on sight, before any instantiation.
@@ -222,6 +245,10 @@ struct UnsupportedCallable {
     static constexpr bool is_const_member = false;
     static constexpr bool is_functor = false;
     static constexpr bool is_const_callable = true;
+    // False so the stand-in's call operators stay unqualified. A noexcept
+    // wrapper around a callable that does not exist would only add "call to
+    // non-noexcept function" underneath the message we are trying to deliver.
+    static constexpr bool is_noexcept = false;
     static constexpr std::size_t arg_count = 0;
     static constexpr std::size_t total_arg_size = 0;
 
@@ -233,65 +260,24 @@ struct UnsupportedCallable {
     UnsupportedReturn operator()(CallArgs&&...) const { return {}; }
 };
 
-// Is this a C-style variadic function -- one declared with a trailing "..."
-// like printf?
+// The two qualifiers that used to need detecting by hand, and no longer do.
 //
-// This needs detecting on purpose, because it is the one unsupported shape that
-// does NOT fail on its own. Deduction against ret(*)(args...) succeeds for
-// int(*)(int, ...) with args = {int}: the ellipsis is simply dropped, and the
-// wrapper silently becomes a one-parameter function. A silent change of
-// signature is worse than a rejection, so the specializations below assert on
-// this and say what happened.
-template <typename F>
-inline constexpr bool is_c_variadic = false;
-template <typename R, typename... A>
-inline constexpr bool is_c_variadic<R(A..., ...)> = true;
-template <typename R, typename... A>
-inline constexpr bool is_c_variadic<R(A..., ...) noexcept> = true;
-
-// Is this a noexcept function? Detected for the same reason as the ellipsis, and
-// it matters even more here because the compilers disagree. GCC will not deduce
-// ret(*)(args...) from a noexcept function pointer at all, so it lands on the
-// primary template; Clang accepts the conversion and matches the specialization
-// with the noexcept quietly dropped. Left alone, the same source is rejected by
-// one compiler and silently altered by the other. These traits let both say the
-// same thing.
-template <typename F>
-inline constexpr bool is_noexcept_function = false;
-template <typename R, typename... A>
-inline constexpr bool is_noexcept_function<R(A...) noexcept> = true;
-template <typename R, typename... A>
-inline constexpr bool is_noexcept_function<R(A..., ...) noexcept> = true;
-
-template <typename M>
-inline constexpr bool is_noexcept_member = false;
-template <typename R, typename C, typename... A>
-inline constexpr bool is_noexcept_member<R (C::*)(A...) noexcept> = true;
-template <typename R, typename C, typename... A>
-inline constexpr bool is_noexcept_member<R (C::*)(A...) const noexcept> = true;
-template <typename R, typename C, typename... A>
-inline constexpr bool is_noexcept_member<R (C::*)(A..., ...) noexcept> = true;
-template <typename R, typename C, typename... A>
-inline constexpr bool is_noexcept_member<R (C::*)(A..., ...) const noexcept> = true;
-
-#define TEMPO_NOEXCEPT_MESSAGE                                                     \
-    "  It is declared 'noexcept', and tempo does not wrap noexcept callables yet.\n"\
-    "  Wrapping one would have to drop the noexcept -- the wrapper itself is not\n" \
-    "  noexcept -- which silently changes the type your callers see.\n"             \
-    "  Fix: wrap the call in a lambda and measure that instead --\n"                \
-    "      auto m = tempo::measure([](int a){ return my_noexcept_fn(a); });\n"      \
-    "  The function you are measuring stays exactly as it is."
-
-template <typename M>
-inline constexpr bool is_c_variadic_member = false;
-template <typename R, typename C, typename... A>
-inline constexpr bool is_c_variadic_member<R (C::*)(A..., ...)> = true;
-template <typename R, typename C, typename... A>
-inline constexpr bool is_c_variadic_member<R (C::*)(A..., ...) const> = true;
-template <typename R, typename C, typename... A>
-inline constexpr bool is_c_variadic_member<R (C::*)(A..., ...) noexcept> = true;
-template <typename R, typename C, typename... A>
-inline constexpr bool is_c_variadic_member<R (C::*)(A..., ...) const noexcept> = true;
+// noexcept is now SUPPORTED: the qualifier is read off the callable and
+// reapplied to every operator() and call_at on the way out, so the type a caller
+// sees keeps the guarantee it had. What that costs is argument capture for
+// parameter types whose copy can throw -- see ArgsAreNothrowStorable, and
+// tracks_args, which reports it.
+//
+// A C-style variadic function is still rejected, but it no longer needs a trait
+// of its own to catch it. It used to: deduction against ret(*)(args...) SUCCEEDS
+// for int(*)(int, ...) with args = {int}, the ellipsis simply dropped, and the
+// wrapper would silently have become a one-parameter function. Matching on the
+// function type instead of the pointer value (see detail::FunctionImpl) removes
+// that conversion entirely -- int(int, ...) is not int(int) and matches no
+// specialization -- so the shape lands on the primary and is reported there.
+//
+// The one combination still rejected is a noexcept C-style variadic function,
+// and it is rejected for the ellipsis, not for the noexcept.
 
 #define TEMPO_C_VARIADIC_MESSAGE                                                   \
     "  A function declared with a trailing '...' (printf-like) cannot be wrapped\n"\
@@ -307,6 +293,7 @@ struct UnsupportedSignature {
     using ReturnType = UnsupportedReturn;
     using ArgsType   = std::tuple<UnsupportedArg>;
     static constexpr bool is_const = true;
+    static constexpr bool is_noexcept = false;
     static constexpr std::size_t total_arg_size = 0;
 };
 
@@ -333,6 +320,7 @@ struct MemberSignature<ret (Owner::*)(args...)> {
     using ReturnType = ret;
     using ArgsType = std::tuple<args...>;
     static constexpr bool is_const = false;
+    static constexpr bool is_noexcept = false;
     static constexpr auto total_arg_size = (sizeof(args) + ... + 0);
 };
 
@@ -341,6 +329,7 @@ struct MemberSignature<ret (Owner::*)(args...) const> {
     using ReturnType = ret;
     using ArgsType = std::tuple<args...>;
     static constexpr bool is_const = true;
+    static constexpr bool is_noexcept = false;
     static constexpr auto total_arg_size = (sizeof(args) + ... + 0);
 };
 
@@ -349,6 +338,7 @@ struct MemberSignature<ret (Owner::*)(args...) noexcept> {
     using ReturnType = ret;
     using ArgsType = std::tuple<args...>;
     static constexpr bool is_const = false;
+    static constexpr bool is_noexcept = true;
     static constexpr auto total_arg_size = (sizeof(args) + ... + 0);
 };
 
@@ -357,6 +347,7 @@ struct MemberSignature<ret (Owner::*)(args...) const noexcept> {
     using ReturnType = ret;
     using ArgsType = std::tuple<args...>;
     static constexpr bool is_const = true;
+    static constexpr bool is_noexcept = true;
     static constexpr auto total_arg_size = (sizeof(args) + ... + 0);
 };
 
@@ -588,39 +579,38 @@ struct WrapperOrStandIn<W> {
 
 } // namespace detail
 
-// The primary template is the failure case: Func is a function pointer, but not
-// one of the shapes the specialization below matches. In practice this is a
-// 'noexcept' function or a C-style variadic one. Reporting it here is what keeps
-// TEMPO_INSTRUMENT(impl::f, f) on a noexcept function to a single message.
-template<auto Func>
-requires FunctionPointer<Func>
-struct Function : detail::UnsupportedCallable {
-    static_assert(detail::always_false_value<Func>,
-        "tempo: this function's type is not supported.\n"
-        "  tempo matches plain function pointers of the form  ret(*)(args...).\n"
-        "  A 'noexcept' function, or a C-style variadic one (printf-like, declared\n"
-        "  with '...'), does not match that shape and lands here.\n"
-        "  Fix: wrap the call in a lambda and measure that instead --\n"
-        "      auto m = tempo::measure([](int a){ return my_unsupported_fn(a); });\n"
-        "  The lambda has none of those qualifiers, so it matches, and the function\n"
-        "  it calls is unchanged.");
-};
+namespace detail {
 
-template <typename ret, typename... args, ret(*func_ptr)(args...)>
-struct Function<func_ptr>{
-
-    // Deduction reaches here for a variadic function too, having dropped the
-    // "..." on the way. See detail::is_c_variadic.
-    static_assert(!detail::is_c_variadic<std::remove_pointer_t<decltype(func_ptr)>>,
-        "tempo: this function's type is not supported.\n"
-        TEMPO_C_VARIADIC_MESSAGE);
-
+// Why Function and Method below are keyed on the callable's TYPE and not on the
+// pointer value, which is the obvious thing and does not work.
+//
+// A pointer to a noexcept function converts implicitly to a pointer to a plain
+// one. Deducing ret(*)(args...) from a noexcept pointer therefore requires a
+// conversion, and the compilers do not agree about it: GCC refuses and falls to
+// the primary template, while Clang performs it and drops the qualifier where no
+// trait inside the specialization can read it back. Adding a second partial
+// specialization for the noexcept shape does not settle it either -- both then
+// match on Clang, and it reports them as ambiguous. Constraints do not break the
+// tie, because from inside the plain specialization the noexcept is already gone
+// and there is nothing left to constrain on.
+//
+// Matching on the function TYPE has no conversion in it. ret(args...) and
+// ret(args...) noexcept are distinct types, each matches exactly one
+// specialization, and both compilers agree -- which also means the C-style
+// variadic shape lands on the primary here instead of quietly losing its
+// ellipsis to deduction, as it used to.
+//
+// The body is shared rather than written out per shape, since the exception
+// specification is the only thing that differs.
+template <auto func_ptr, bool Noexcept, typename ret, typename... args>
+struct FunctionBody {
     using  ReturnType = ret;
     using  ArgsType   = std::tuple<args...>;
     using  ClassType  = void;
     static constexpr bool is_member = false;
     static constexpr bool is_const_member = false;
     static constexpr bool is_functor = false;
+    static constexpr bool is_noexcept = Noexcept;
     static constexpr auto arg_count = sizeof...(args);
     static constexpr auto total_arg_size = (sizeof(args) + ... + 0);
     inline static std::atomic<unsigned int> call_count{0};
@@ -628,43 +618,59 @@ struct Function<func_ptr>{
     // The parameters are forwarding references: an argument reaches func_ptr with
     // its own value category, without a copy in between. The std::invocable
     // constraint keeps the error at the call site rather than inside std::invoke.
+    //
+    // noexcept follows the function, so the wrapper's type carries the same
+    // guarantee it had. Nothing else in here can throw: the counter is atomic.
     template <typename... CallArgs>
         requires std::invocable<decltype(func_ptr), CallArgs...>
-    ReturnType operator()(CallArgs&&... call_args) const {
+    ReturnType operator()(CallArgs&&... call_args) const noexcept(Noexcept) {
         call_count++;
         return std::invoke(func_ptr, std::forward<CallArgs>(call_args)...);
     }
-
 };
 
-// As with Function, the primary template is the failure case: a member function
-// pointer whose shape neither specialization below matches -- a 'noexcept',
-// ref-qualified or volatile member function.
-template<auto MethodValue>
-requires MethodPointer<MethodValue>
-struct Method : detail::UnsupportedCallable {
-    static_assert(detail::always_false_value<MethodValue>,
-        "tempo: this member function's type is not supported.\n"
-        "  tempo matches member function pointers of the form  ret(Class::*)(args...)\n"
-        "  and their const version. A 'noexcept' member function, a ref-qualified one\n"
-        "  (declared with a trailing '&' or '&&'), or a volatile one does not match.\n"
-        "  Fix: wrap the call in a lambda that captures the object and measure that --\n"
-        "      auto m = tempo::measure([&obj](int a){ return obj.my_method(a); });");
-};
-
-template <typename ClassName,typename ret, typename...args , ret(ClassName::*method)(args...)>
-struct Method<method>{
-
-    static_assert(!detail::is_c_variadic_member<decltype(method)>,
-        "tempo: this member function's type is not supported.\n"
+// The primary is the failure case: a function type none of the specializations
+// match, which in practice means a C-style variadic one. Reporting it here is
+// what keeps TEMPO_INSTRUMENT(impl::f, f) on an unsupported function to a single
+// message.
+template <typename Signature, auto func_ptr>
+struct FunctionImpl : UnsupportedCallable {
+    static_assert(always_false_value<func_ptr>,
+        "tempo: this function's type is not supported.\n"
+        "  tempo matches function pointers of the form  ret(*)(args...), with or\n"
+        "  without 'noexcept'.\n"
         TEMPO_C_VARIADIC_MESSAGE);
+};
 
+template <typename ret, typename... args, auto func_ptr>
+struct FunctionImpl<ret(args...), func_ptr>
+    : FunctionBody<func_ptr, false, ret, args...> {};
+
+template <typename ret, typename... args, auto func_ptr>
+struct FunctionImpl<ret(args...) noexcept, func_ptr>
+    : FunctionBody<func_ptr, true, ret, args...> {};
+
+} // namespace detail
+
+template<auto Func>
+requires FunctionPointer<Func>
+struct Function : detail::FunctionImpl<std::remove_pointer_t<decltype(Func)>, Func> {};
+
+namespace detail {
+
+// The member-function counterpart of FunctionBody and FunctionImpl, keyed on the
+// pointer type for the same reason -- see the comment above FunctionBody. There
+// are four shapes here rather than two, because const and noexcept are
+// independent.
+template <auto method, bool Noexcept, bool Const, typename ClassName, typename ret, typename... args>
+struct MethodBody {
     using ReturnType = ret;
     using ArgsType = std::tuple<args...>;
     using ClassType = ClassName;
     static constexpr bool is_member = true;
-    static constexpr bool is_const_member = false;
+    static constexpr bool is_const_member = Const;
     static constexpr bool is_functor = false;
+    static constexpr bool is_noexcept = Noexcept;
     static constexpr auto arg_count = sizeof...(args);
     static constexpr auto total_arg_size = (sizeof(args) +  ... +  0);
     inline static std::atomic<unsigned int> call_count{0};
@@ -673,36 +679,47 @@ struct Method<method>{
     // ClassName*, std::reference_wrapper and smart pointers all work.
     template <typename Self, typename... CallArgs>
         requires std::invocable<decltype(method), Self, CallArgs...>
-    ReturnType operator()(Self&& self, CallArgs&&... call_args) const {
+    ReturnType operator()(Self&& self, CallArgs&&... call_args) const noexcept(Noexcept) {
         call_count++;
         return std::invoke(method, std::forward<Self>(self), std::forward<CallArgs>(call_args)...);
     }
 };
 
-template <typename ClassName,typename ret, typename...args , ret(ClassName::*method)(args...) const>
-struct Method<method>{
-
-    static_assert(!detail::is_c_variadic_member<decltype(method)>,
+// The primary is the failure case: a ref-qualified, volatile or C-style variadic
+// member function, none of which match a specialization below.
+template <typename Signature, auto method>
+struct MethodImpl : UnsupportedCallable {
+    static_assert(always_false_value<method>,
         "tempo: this member function's type is not supported.\n"
-        TEMPO_C_VARIADIC_MESSAGE);
-
-    using ReturnType = ret;
-    using ArgsType = std::tuple<args...>;
-    using ClassType = ClassName;
-    static constexpr bool is_member = true;
-    static constexpr bool is_const_member = true;
-    static constexpr bool is_functor = false;
-    static constexpr auto arg_count = sizeof...(args);
-    static constexpr auto total_arg_size = (sizeof(args) +  ... +  0);
-    inline static std::atomic<unsigned int> call_count{0};
-
-    template <typename Self, typename... CallArgs>
-        requires std::invocable<decltype(method), Self, CallArgs...>
-    ReturnType operator()(Self&& self, CallArgs&&... call_args) const {
-        call_count++;
-        return std::invoke(method, std::forward<Self>(self), std::forward<CallArgs>(call_args)...);
-    }
+        "  tempo matches member function pointers of the form  ret(Class::*)(args...),\n"
+        "  their const version, and either of those declared 'noexcept'.\n"
+        "  A ref-qualified member function (declared with a trailing '&' or '&&'), a\n"
+        "  volatile one, or a C-style variadic one ('...') does not match.\n"
+        "  Fix: wrap the call in a lambda that captures the object and measure that --\n"
+        "      auto m = tempo::measure([&obj](int a){ return obj.my_method(a); });");
 };
+
+template <typename ClassName, typename ret, typename... args, auto method>
+struct MethodImpl<ret (ClassName::*)(args...), method>
+    : MethodBody<method, false, false, ClassName, ret, args...> {};
+
+template <typename ClassName, typename ret, typename... args, auto method>
+struct MethodImpl<ret (ClassName::*)(args...) const, method>
+    : MethodBody<method, false, true, ClassName, ret, args...> {};
+
+template <typename ClassName, typename ret, typename... args, auto method>
+struct MethodImpl<ret (ClassName::*)(args...) noexcept, method>
+    : MethodBody<method, true, false, ClassName, ret, args...> {};
+
+template <typename ClassName, typename ret, typename... args, auto method>
+struct MethodImpl<ret (ClassName::*)(args...) const noexcept, method>
+    : MethodBody<method, true, true, ClassName, ret, args...> {};
+
+} // namespace detail
+
+template<auto MethodValue>
+requires MethodPointer<MethodValue>
+struct Method : detail::MethodImpl<decltype(MethodValue), MethodValue> {};
 
 // The unconstrained primary is the failure case -- CallableValue is neither a
 // function pointer nor a member function pointer. It resolves to the stand-in so
@@ -742,30 +759,13 @@ struct Callable : CallableImplementation<CallableValue>::Type {
         "      auto m = tempo::measure(my_lambda);\n"
         "      TEMPO_METRICS_CALL(m, arg1, arg2);");
 
-    // noexcept, and why it is reported from here rather than from Function or
-    // Method. The two compilers take different routes to a noexcept callable:
-    // Clang deduces the plain specialization from it, dropping the noexcept --
-    // which is then invisible to any trait inside that specialization, since the
-    // parameter's declared type no longer carries it. GCC refuses the deduction
-    // and lands on the primary template instead.
-    //
-    // Here the template argument's own type is still intact, so both can be
-    // caught. The is_base_of test is what keeps it to one message: when the
-    // primary was chosen, the wrapper derives from the stand-in and has already
-    // said its piece, so this assert stays quiet and lets that one stand.
-    static_assert(!(FunctionPointer<CallableValue> &&
-                    detail::is_noexcept_function<std::remove_pointer_t<decltype(CallableValue)>> &&
-                    !std::is_base_of_v<detail::UnsupportedCallable,
-                                       typename CallableImplementation<CallableValue>::Type>),
-        "tempo: this function's type is not supported.\n"
-        TEMPO_NOEXCEPT_MESSAGE);
-
-    static_assert(!(MethodPointer<CallableValue> &&
-                    detail::is_noexcept_member<decltype(CallableValue)> &&
-                    !std::is_base_of_v<detail::UnsupportedCallable,
-                                       typename CallableImplementation<CallableValue>::Type>),
-        "tempo: this member function's type is not supported.\n"
-        TEMPO_NOEXCEPT_MESSAGE);
+    // There used to be two more asserts here, rejecting noexcept callables. They
+    // are gone: Function and Method now have exact specializations for the
+    // noexcept shapes, so both compilers match one and neither has to drop the
+    // qualifier to get there. What made this the right place for the check --
+    // that the template argument's own type is still intact here, while inside a
+    // specialization Clang may already have dropped the noexcept -- is exactly
+    // what an exact specialization fixes at the source.
 
     using CallableType = typename CallableImplementation<CallableValue>::Type;
     using CallableType::operator();
@@ -798,6 +798,9 @@ struct Functor {
     static constexpr bool is_const_member = false;
     static constexpr bool is_functor = true;
     static constexpr bool is_const_callable = SignatureType::is_const;
+    // Read off operator(), so a lambda declared [](int) noexcept {...} gets a
+    // noexcept wrapper exactly as a noexcept function does.
+    static constexpr bool is_noexcept = SignatureType::is_noexcept;
     static constexpr auto arg_count = std::tuple_size_v<ArgsType>;
     static constexpr auto total_arg_size = SignatureType::total_arg_size;
 
@@ -812,7 +815,7 @@ struct Functor {
 
     template <typename... CallArgs>
         requires std::invocable<F&, CallArgs...>
-    ReturnType operator()(CallArgs&&... call_args) const {
+    ReturnType operator()(CallArgs&&... call_args) const noexcept(is_noexcept) {
         call_count++;
         // The `if constexpr` serves only the failure case above, where ReturnType
         // is the stand-in while the object itself returns void. On the real path
@@ -895,7 +898,18 @@ struct Profiler{
     CallableType callable;
 
 
+    // Whether the wrapped callable promised not to throw, and therefore whether
+    // this wrapper does too.
+    static constexpr bool is_noexcept = CallableType::is_noexcept;
+
+    // noexcept follows the callable, as in Metrics. Unlike Metrics this path
+    // takes the lock BEFORE the call, to keep two threads' report lines from
+    // interleaving -- so a mutex that fails to lock terminates here rather than
+    // unwinding. That is the same lock, in the same state, that the destructor
+    // below has always taken with no way to unwind either; std::mutex::lock only
+    // throws on errors a correct program cannot produce.
     ReturnType call_at(SourceLocation location, auto&&... args) const
+        noexcept(is_noexcept)
         requires std::invocable<const CallableType&, decltype(args)...>
     {
         {
@@ -917,6 +931,7 @@ struct Profiler{
     }
 
     ReturnType operator()(auto&&... args) const
+        noexcept(is_noexcept)
         requires std::invocable<const CallableType&, decltype(args)...>
     {
         return call_at(SourceLocation::current(), std::forward<decltype(args)>(args)...);
@@ -976,6 +991,7 @@ namespace detail {
 template <typename Derived, typename CallableType>
 struct VariadicCall {
     typename CallableType::ReturnType operator()(auto&&... args) const
+        noexcept(CallableType::is_noexcept)
         requires std::invocable<const CallableType&, decltype(args)...>
     {
         return static_cast<const Derived&>(*this).call_at(
@@ -1013,9 +1029,15 @@ struct FixedSignatureCall;
 
 template <typename Derived, typename CallableType, typename... Args>
 struct FixedSignatureCall<Derived, CallableType, std::tuple<Args...>> {
+    // noexcept follows the callable, so an instrumented name keeps the exception
+    // specification the function it stands for had. This is what makes
+    // TEMPO_INSTRUMENT usable on a noexcept function at all: the seam works by
+    // the wrapper taking the function's name, so the wrapper's type is the type
+    // every caller now sees.
     typename CallableType::ReturnType operator()(
         Args... args,
         std::source_location location = std::source_location::current()) const
+        noexcept(CallableType::is_noexcept)
     {
         return static_cast<const Derived&>(*this).call_at(
             location, static_cast<Args&&>(args)...);
@@ -1066,7 +1088,19 @@ struct Metrics : detail::CallOperator<Metrics<WrapperType>,
     static_assert(Clock::is_steady, "tempo requires a monotonic clock to measure durations");
     using Duration = std::chrono::duration<double, std::milli>;
 
-    static constexpr bool tracks_args = detail::ArgsAreStorable<ArgsType>::value;
+    // Whether the wrapped callable promised not to throw, and therefore whether
+    // this wrapper does too.
+    static constexpr bool is_noexcept = CallableType::is_noexcept;
+
+    // Argument capture is off when any parameter cannot be stored -- and, for a
+    // noexcept callable, also when storing it could throw. The wrapper's
+    // noexcept is a promise made to its callers, and the copy tempo takes to
+    // record a call is the one allocation it would be broken by; a std::string
+    // parameter on a noexcept function is the ordinary case. Timing, counts and
+    // the report are unaffected either way. See ArgsAreNothrowStorable.
+    static constexpr bool tracks_args =
+        detail::ArgsAreStorable<ArgsType>::value &&
+        (!is_noexcept || detail::ArgsAreNothrowStorable<ArgsType>::value);
 
     // The signature with its references stripped: storable and assignable.
     using StoredArgsType = std::conditional_t<
@@ -1229,7 +1263,18 @@ public:
         (void)once;
     }
 
+    // noexcept follows the callable. Nothing on this path throws when it does:
+    // the argument snapshot is restricted to nothrow-storable types (see
+    // tracks_args), and the recording that takes the lock happens in
+    // RecordOnExit's destructor, which is noexcept already and always was.
+    //
+    // One residual path is worth naming rather than hiding: ensure_registered()
+    // allocates, once, on the first call, and an allocation failure there
+    // terminates instead of unwinding. That is the same thing any noexcept
+    // function does when it runs out of memory, and it is the price of the
+    // aggregated report knowing about a metric without being told.
     ReturnType call_at(SourceLocation location, auto&&... args) const
+        noexcept(is_noexcept)
         requires std::invocable<const CallableType&, decltype(args)...>
     {
         ensure_registered();
@@ -1269,6 +1314,12 @@ public:
     "  callable's parameters is not -- a move-only type such as\n"                  \
     "  std::unique_ptr, a reference member, or a type with no default\n"            \
     "  constructor.\n"                                                              \
+    "  If the callable is declared 'noexcept', the rule is stricter: copying,\n"    \
+    "  storing and overwriting each parameter must itself be noexcept, because\n"   \
+    "  the wrapper carries the same noexcept and the copy tempo takes to record\n"  \
+    "  a call is the one place it could throw. A std::string or std::vector\n"      \
+    "  parameter on a noexcept function lands here for that reason. Wrapping the\n" \
+    "  call in a plain (throwing) lambda and measuring that gets capture back.\n"   \
     "  Timing, call counts and the report are unaffected; only argument capture\n"  \
     "  switches itself off. Query it first with:\n"                                 \
     "      if constexpr (decltype(m)::tracks_args) { ... m.get_maximizers() ... }"
