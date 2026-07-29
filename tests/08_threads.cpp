@@ -19,8 +19,10 @@
 namespace {
 
 int spin(int rounds, int tag) {
-    volatile int sink = 0;
-    for (int i = 0; i < rounds; ++i) { sink += i; }
+    // unsigned so the sum cannot overflow into undefined behaviour if a caller
+    // raises `rounds`; wraparound is defined and this loop only burns time.
+    volatile unsigned int sink = 0;
+    for (int i = 0; i < rounds; ++i) { sink += static_cast<unsigned int>(i); }
     return tag;
 }
 

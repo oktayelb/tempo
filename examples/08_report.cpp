@@ -8,7 +8,11 @@
 // Every Metrics instantiation registers itself on its first call, so the report
 // covers everything that ran without you listing anything by hand.
 
+// Guarded, so a build that sets this on the command line -- as the CMake target
+// does for every translation unit at once -- is not fighting the source file.
+#ifndef TEMPO_PRINT_ENABLED
 #define TEMPO_PRINT_ENABLED 0
+#endif
 #include "tempo.hpp"
 
 #include <cassert>
@@ -18,16 +22,19 @@
 
 int fast_path(int value) { return value * 2; }
 
+// unsigned, because the running sum passes INT_MAX well before these loops end
+// and signed overflow is undefined behaviour. Unsigned wraparound is defined,
+// and burning time is all these loops are for.
 int slow_path(int rounds) {
-    volatile int sink = 0;
-    for (int i = 0; i < rounds * 20000; ++i) { sink = sink + i; }
-    return sink;
+    volatile unsigned int sink = 0;
+    for (int i = 0; i < rounds * 20000; ++i) { sink = sink + static_cast<unsigned int>(i); }
+    return static_cast<int>(sink);
 }
 
 int shared_worker(int rounds) {
-    volatile int sink = 0;
-    for (int i = 0; i < rounds * 500; ++i) { sink = sink + i; }
-    return sink;
+    volatile unsigned int sink = 0;
+    for (int i = 0; i < rounds * 500; ++i) { sink = sink + static_cast<unsigned int>(i); }
+    return static_cast<int>(sink);
 }
 
 int main() {

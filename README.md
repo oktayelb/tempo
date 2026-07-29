@@ -32,7 +32,9 @@ MIT licensed. Header-only, nothing to link. Requires C++20 (concepts,
 
 ## Building
 
-Drop `tempo.hpp` on your include path. There is nothing to link.
+Drop `tempo.hpp` on your include path. There is nothing to link, nothing to
+configure, and no build system of tempo's to adopt — it is one header, and your
+own build already knows how to compile a header.
 
 ```sh
 # GCC
@@ -94,8 +96,9 @@ truncated. Do not parse the report; read `snapshot()` instead.
 
 GCC and Clang on Linux and Apple Clang on macOS, under every combination of the
 three macros, at C++20 and C++23, plus AddressSanitizer, UndefinedBehaviorSanitizer
-and ThreadSanitizer. **MSVC is not covered** — the code paths for it exist and are
-written against the documented behaviour, but nothing verifies them.
+and ThreadSanitizer, over the tests and the examples alike. **MSVC is not
+covered** — the code paths for it exist and are written against the documented
+behaviour, but nothing verifies them.
 
 ## Instrumenting without touching call sites
 
@@ -195,8 +198,11 @@ make sanitize                 # address + undefined behaviour
 make tsan                     # data races
 ```
 
+The examples have the same three: `cd examples && make run`, `make sanitize`,
+`make tsan`.
+
 Each file is a separate binary, like the examples, and exits non-zero on
-failure. 109 tests, 369 checks.
+failure. 126 tests, 398 checks.
 
 | | |
 |---|---|
@@ -210,6 +216,7 @@ failure. 109 tests, 369 checks.
 | `08_threads.cpp` | exact counts under contention, torn-read detection |
 | `09_constructors.cpp` | `ConstructorProfiler`, elision, move-only arguments |
 | `10_abuse.cpp` | degenerate signatures, 16 parameters, nesting, mid-run reset |
+| `11_noexcept.cpp` | the qualifier surviving the wrapper, and what capture costs |
 | `diagnostics/` | 14 mistakes that must NOT compile, each with one clear message |
 
 Lambdas and functors are objects, not pointers, so they cannot be template
@@ -247,25 +254,26 @@ and never serialises the code being profiled. State inside the callable itself
 ## When you use it wrong
 
 Everything tempo rejects, it rejects with a sentence, not with a template
-instantiation backtrace. Pointing `TEMPO_INSTRUMENT` at a `noexcept` function
-used to produce 71 lines of errors ending in `invalid use of incomplete type`.
-It now produces one:
+instantiation backtrace. Pointing `TEMPO_INSTRUMENT` at a `printf`-like variadic
+function used to produce a page of errors ending in `invalid use of incomplete
+type`. It now produces one:
 
 ```
 error: static assertion failed: tempo: this function's type is not supported.
-  It is declared 'noexcept', and tempo does not wrap noexcept callables yet.
-  Wrapping one would have to drop the noexcept -- the wrapper itself is not
-  noexcept -- which silently changes the type your callers see.
-  Fix: wrap the call in a lambda and measure that instead --
-      auto m = tempo::measure([](int a){ return my_noexcept_fn(a); });
-  The function you are measuring stays exactly as it is.
+  tempo matches function pointers of the form  ret(*)(args...), with or
+  without 'noexcept'.
+  A function declared with a trailing '...' (printf-like) cannot be wrapped
+  faithfully: tempo would build a wrapper from the NAMED parameters only and
+  quietly drop the '...', so calls passing variadic arguments would stop
+  compiling and the signature would no longer be the one you wrote.
+  Fix: wrap the calls you want measured in a lambda --
+      auto m = tempo::measure([]{ return my_printf_like(3, 10, 20, 30); });
 ```
 
 Each message names what was wrong and what to write instead. The cases covered:
 
 | | |
 |---|---|
-| `noexcept` function or method | says so, and shows the lambda that works |
 | C-style variadic (`printf`-like) | says so, and why the `...` cannot be kept |
 | ref-qualified or volatile member | says which qualifier is the problem |
 | lambda passed to the macros | points at `tempo::measure` instead |
@@ -278,16 +286,54 @@ Each message names what was wrong and what to write instead. The cases covered:
 The one-error guarantee is enforced, not hoped for: `tests/diagnostics` compiles
 each mistake and fails if it produces more than one error, or an error that does
 not carry tempo's own wording. Both compilers run it in CI, because they do not
-agree on which unsupported shapes they will silently accept — Clang deduces a
-plain signature from a `noexcept` function and drops the qualifier, GCC refuses
-outright. tempo rejects it either way, with the same message.
+agree on which unsupported shapes they will silently accept.
+
+## noexcept
+
+A `noexcept` callable gets a `noexcept` wrapper. The qualifier is read off the
+callable and reapplied to every call operator on the way out, so an instrumented
+name still satisfies `noexcept(f(x))` and nothing that depended on the guarantee
+changes meaning:
+
+```cpp
+namespace impl { int scale(int v) noexcept { return v * 2; } }
+TEMPO_INSTRUMENT(impl::scale, scale);
+
+static_assert(noexcept(scale(1)));   // still true through the wrapper
+```
+
+This matters more than it looks, because `TEMPO_INSTRUMENT` works by giving the
+wrapper the function's own name. The wrapper's type *is* the type every call site
+now resolves against, so dropping the `noexcept` there would silently weaken the
+contract everywhere, with no diagnostic anywhere.
+
+It costs one thing. Capturing an argument means copying it, and a copy that
+allocates can throw — inside a wrapper that has just promised it will not. tempo
+will not turn a `noexcept` function into one that terminates on a full heap, so
+for `noexcept` callables argument capture is restricted to parameter types it can
+copy, store and overwrite without throwing:
+
+```cpp
+std::size_t width(std::string) noexcept;   // tracks_args == false
+int         scale(int)         noexcept;   // tracks_args == true
+```
+
+Timing, call counts and the report are unaffected either way, and `tracks_args`
+reports it at compile time — asking for `get_maximizers()` on a metric that is
+not capturing is a compile error that says why. To get capture back, measure a
+plain (throwing) lambda that calls the function.
+
+Two residual notes. `TEMPO_RECURSIVE` has no slot for the qualifier, so a
+recursive `noexcept` function cannot be declared through it. And an allocation
+failure inside the once-per-metric registration terminates rather than unwinds,
+which is what any `noexcept` function does when it runs out of memory.
 
 ## Known limits
 
-`noexcept` callables, C-style variadic functions, generic lambdas
-(`[](auto x){}`), overloaded `operator()` and overloaded function names are not
-supported — all of them diagnosed as above rather than left to the compiler.
-Counters are static per wrapped type, so every `std::function<int(int)>` in a
-program shares one counter; wrap the underlying lambda instead. The summary
-reports totals and extremes but no percentiles or histograms, since samples are
-not retained.
+C-style variadic functions, generic lambdas (`[](auto x){}`), overloaded
+`operator()` and overloaded function names are not supported — all of them
+diagnosed as above rather than left to the compiler. Counters are static per
+wrapped type, so every `std::function<int(int)>` in a program shares one counter;
+wrap the underlying lambda instead. The summary reports totals and extremes but
+no percentiles or histograms, since samples are not retained. `noexcept`
+callables are supported, with the argument-capture restriction described above.

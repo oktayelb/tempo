@@ -14,7 +14,11 @@
 //     g++ -std=c++20 -O2 -I.. 10_recursion.cpp -o r0
 //     g++ -std=c++20 -O2 -I.. -DTEMPO_COUNT_RECURSION=1 10_recursion.cpp -o r1
 
+// Guarded, so a build that sets this on the command line -- as the CMake target
+// does for every translation unit at once -- is not fighting the source file.
+#ifndef TEMPO_PRINT_ENABLED
 #define TEMPO_PRINT_ENABLED 0
+#endif
 #include "tempo.hpp"
 
 #include <cassert>

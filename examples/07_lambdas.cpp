@@ -58,7 +58,11 @@ int main() {
               << "  calls=" << Add::call_count << "\n";
 
     // --- captures are carried along ------------------------------------------
-    const int offset = 100;
+    // Not const, on purpose. A const int with a constant initializer is usable
+    // inside the lambda without being captured at all, and Clang says so
+    // (-Wunused-lambda-capture) -- which would make this a demonstration of a
+    // capture that is not one.
+    int offset = 100;
     auto shift = tempo::wrap([offset](int value) { return value + offset; });
     assert(shift(1) == 101);
     std::cout << "capturing lambda  : " << shift(1) << "\n";
@@ -81,8 +85,11 @@ int main() {
 
     // --- timing a lambda, and recovering its slowest arguments ---------------
     auto spin = tempo::measure([](int rounds, int id) {
-        volatile int sink = 0;
-        for (int i = 0; i < rounds * 100000; ++i) { sink = sink + i; }
+        // unsigned, because the running sum passes INT_MAX well before the loop
+        // ends and signed overflow is undefined behaviour. Unsigned wraparound
+        // is defined, and burning time is all this loop is for.
+        volatile unsigned int sink = 0;
+        for (int i = 0; i < rounds * 100000; ++i) { sink = sink + static_cast<unsigned int>(i); }
         return id;
     });
 

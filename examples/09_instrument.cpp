@@ -36,7 +36,9 @@ int main() {
     // Ordinary calls. No macro, no wrapper object, nothing to remember.
     sleep_for(12, 101);
     sleep_for(4, 102);
-    const int slow_line = __LINE__ + 1;
+    // Only read under TEMPO_ENABLED, but it has to be recorded here, next to the
+    // call it names.
+    [[maybe_unused]] const int slow_line = __LINE__ + 1;
     sleep_for(20, 103);
 
     describe("hello", 3);
@@ -59,7 +61,6 @@ int main() {
     std::cout << "last call site: " << stats.last_call_location.file_name()
               << ":" << stats.last_call_location.line() << "\n";
 
-    const auto slow = decltype(sleep_for)::snapshot();
     std::cout << "the 20 ms call was written on line " << slow_line << "\n";
 
     // A reference parameter costs nothing extra on this path; only a by-value
