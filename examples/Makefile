@@ -1,5 +1,5 @@
 CXX      ?= g++
-CXXFLAGS ?= -std=c++20 -Wall -Wextra -O2 -I..
+CXXFLAGS ?= -std=c++20 -Wall -Wextra -O2 -pthread -I..
 
 SRCS := $(wildcard *.cpp)
 BINS := $(patsubst %.cpp,build/%,$(SRCS))

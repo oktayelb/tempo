@@ -28,18 +28,20 @@ int main() {
         TEMPO_METRICS_CALL(fib, n);
     }
 
-    const auto fastest = fib.get_minimizers();
-    const auto slowest = fib.get_maximizers();
+    // snapshot() takes every statistic under one lock, so the numbers below are
+    // guaranteed to describe the same moment.
+    const auto stats = FibMetrics::snapshot();
+    const auto fastest = stats.min_args;
+    const auto slowest = stats.max_args;
 
     std::cout << "\n=============== summary ===============\n";
-    std::cout << "calls        : " << FibMetrics::call_count << "\n";
-    std::cout << "total time   : " << FibMetrics::total_duration.count() << " ms\n";
-    std::cout << "average      : "
-              << FibMetrics::total_duration.count() / FibMetrics::call_count << " ms\n";
+    std::cout << "calls        : " << stats.calls << "\n";
+    std::cout << "total time   : " << stats.total_duration.count() << " ms\n";
+    std::cout << "average      : " << stats.average_ms() << " ms\n";
     std::cout << "fastest call : n = " << std::get<0>(fastest)
-              << "  (" << FibMetrics::min_duration.count() << " ms)\n";
+              << "  (" << stats.min_duration.count() << " ms)\n";
     std::cout << "slowest call : n = " << std::get<0>(slowest)
-              << "  (" << FibMetrics::max_duration.count() << " ms)\n";
+              << "  (" << stats.max_duration.count() << " ms)\n";
 
     // The workload's worst input is 32 and its best is 20, and tempo found both
     // without anyone writing a timer.

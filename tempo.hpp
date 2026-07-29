@@ -10,14 +10,28 @@
 
 #include <iostream>
 #include <type_traits>
+#include <algorithm>
 #include <chrono>
 #include <atomic>
 #include <concepts>
 #include <exception>
 #include <functional>
+#include <iomanip>
+#include <mutex>
+#include <ostream>
+#include <string>
+#include <string_view>
 #include <tuple>
 #include <source_location>
 #include <utility>
+#include <vector>
+
+// Her çağrıda satır satır rapor basılsın mı? 0 yaparsanız tüm cout çağrıları
+// derlemeden çıkar; istatistikler yine toplanır ve tempo::report() ile tek
+// seferde özet alırsınız. Include'dan ÖNCE tanımlayın.
+#ifndef TEMPO_PRINT_ENABLED
+#define TEMPO_PRINT_ENABLED 1
+#endif
 
 #define TEMPO_CALLABLE(callable) ::tempo::Callable<&callable>
 #define TEMPO_FUNCTION(function) ::tempo::Function<&function>
@@ -99,7 +113,131 @@ struct MemberSignature<ret (Owner::*)(args...) const noexcept> {
     static constexpr auto total_arg_size = (sizeof(args) + ... + 0);
 };
 
+// Tip adını __PRETTY_FUNCTION__'dan kazıyoruz; özet tablosunda "Callable<fibonacci>"
+// gibi okunur bir ad çıksın diye. typeid(...).name() mangled ve okunmaz olurdu.
+template <typename T>
+constexpr std::string_view type_name() {
+#if defined(__clang__)
+    constexpr std::string_view text = __PRETTY_FUNCTION__;
+    constexpr std::string_view prefix = "[T = ";
+    constexpr std::string_view suffix = "]";
+#elif defined(__GNUC__)
+    constexpr std::string_view text = __PRETTY_FUNCTION__;
+    constexpr std::string_view prefix = "with T = ";
+    constexpr std::string_view suffix = ";";
+#else
+    constexpr std::string_view text = __FUNCSIG__;
+    constexpr std::string_view prefix = "type_name<";
+    constexpr std::string_view suffix = ">(";
+#endif
+    const auto begin = text.find(prefix) + prefix.size();
+    auto end = text.find(suffix, begin);
+    if (end == std::string_view::npos) { end = text.rfind(']'); }
+    return text.substr(begin, end - begin);
+}
+
+// Toplu raporlama için kayıt defteri. Her Metrics örneklemesi ilk çağrısında
+// kendi satırını getiren bir fonksiyonu buraya bırakıyor; tempo::report() hepsini
+// toplayıp sıralı tek bir tablo basıyor.
+struct ReportRow {
+    std::string name;
+    unsigned int calls = 0;
+    double total_ms = 0.0;
+    double min_ms = 0.0;
+    double max_ms = 0.0;
+    bool has_samples = false;
+
+    double average_ms() const { return calls ? total_ms / calls : 0.0; }
+};
+
+using RowFetcher = ReportRow (*)();
+using Resetter = void (*)();
+
+struct Registry {
+    std::mutex mutex;
+    std::vector<RowFetcher> fetchers;
+    std::vector<Resetter> resetters;
+};
+
+// Fonksiyon içi static: statik başlatma sırası sorunu yok, ilk kullanımda kurulur.
+inline Registry& registry() {
+    static Registry instance;
+    return instance;
+}
+
+inline void add_to_registry(RowFetcher fetcher, Resetter resetter) {
+    Registry& reg = registry();
+    const std::lock_guard<std::mutex> guard{reg.mutex};
+    reg.fetchers.push_back(fetcher);
+    reg.resetters.push_back(resetter);
+}
+
 } // namespace detail
+
+// Tüm kayıtlı metriklerin özeti, toplam süreye göre sıralı tek tablo.
+inline void report(std::ostream& out = std::cout) {
+    std::vector<detail::ReportRow> rows;
+    {
+        detail::Registry& reg = detail::registry();
+        const std::lock_guard<std::mutex> guard{reg.mutex};
+        rows.reserve(reg.fetchers.size());
+        for (const detail::RowFetcher fetch : reg.fetchers) { rows.push_back(fetch()); }
+    }
+
+    std::erase_if(rows, [](const detail::ReportRow& row) { return row.calls == 0; });
+    std::ranges::sort(rows, [](const auto& left, const auto& right) {
+        return left.total_ms > right.total_ms;
+    });
+
+    out << "\n=== tempo report ===================================================\n";
+    if (rows.empty()) {
+        out << "(no calls recorded)\n";
+        return;
+    }
+
+    std::size_t width = 8;
+    for (const auto& row : rows) { width = std::max(width, row.name.size()); }
+    width = std::min<std::size_t>(width, 60);
+
+    out << std::left << std::setw(static_cast<int>(width)) << "callable"
+        << std::right
+        << std::setw(8)  << "calls"
+        << std::setw(12) << "total ms"
+        << std::setw(12) << "avg ms"
+        << std::setw(12) << "min ms"
+        << std::setw(12) << "max ms" << "\n";
+    out << std::string(width + 56, '-') << "\n";
+
+    for (const auto& row : rows) {
+        std::string name = row.name;
+        if (name.size() > width) { name = name.substr(0, width - 3) + "..."; }
+        out << std::left << std::setw(static_cast<int>(width)) << name
+            << std::right << std::fixed << std::setprecision(4)
+            << std::setw(8)  << row.calls
+            << std::setw(12) << row.total_ms
+            << std::setw(12) << row.average_ms()
+            << std::setw(12) << row.min_ms
+            << std::setw(12) << row.max_ms << "\n";
+    }
+    out << std::string(width + 56, '=') << "\n";
+}
+
+// Kayıtlı bütün metrikleri sıfırlar.
+inline void reset_all() {
+    detail::Registry& reg = detail::registry();
+    const std::lock_guard<std::mutex> guard{reg.mutex};
+    for (const detail::Resetter reset : reg.resetters) { reset(); }
+}
+
+// Program biterken özeti otomatik bastırmak isteyenler için.
+inline void report_at_exit(std::ostream& out = std::cout) {
+    struct AtExit {
+        std::ostream* stream;
+        ~AtExit() { report(*stream); }
+    };
+    static AtExit guard{&out};   // yıkıcısı program sonunda çalışır
+    (void)guard;
+}
 
 // Çağrılabilir nesne: lambda, functor, std::function. Tek ve şablon olmayan bir
 // operator() gerekiyor -- generic lambda ([](auto x){...}) ve operator()'ı
@@ -262,20 +400,34 @@ struct Profiler{
     using ArgsType = typename CallableType::ArgsType;
 
     using SourceLocation = std::source_location;
+
+    // Paylaşılan durumu koruyan kilit. Kilit ASLA kullanıcı fonksiyonu
+    // çağrılırken tutulmuyor -- yalnızca kısa kritik bölgelerde alınıyor, o
+    // yüzden ne kilitlenme ne de ölçülen kodun serileşmesi söz konusu.
+    inline static std::mutex state_mutex;
     inline static SourceLocation last_call_location{};
-    static SourceLocation get_last_call_location() { return last_call_location; }
-    
+
+    static SourceLocation get_last_call_location() {
+        const std::lock_guard<std::mutex> guard{state_mutex};
+        return last_call_location;
+    }
+
     CallableType callable;
 
 
     ReturnType call_at(SourceLocation location, auto&&... args) const
         requires std::invocable<const CallableType&, decltype(args)...>
     {
-        last_call_location = location;
-        std::cout << "[CallableProfiler] Starting execution...\n";
-        std::cout << "[CallableProfiler] Call location: " << location.file_name() << ":" << location.line() << "\n";
-        std::cout << "[CallableProfiler] Caller function: " << location.function_name() << "\n";
-        std::cout << "[CallableProfiler] Total size of args:" << CallableType::total_arg_size << " bytes\n";
+        {
+            const std::lock_guard<std::mutex> guard{state_mutex};
+            last_call_location = location;
+#if TEMPO_PRINT_ENABLED
+            std::cout << "[CallableProfiler] Starting execution...\n";
+            std::cout << "[CallableProfiler] Call location: " << location.file_name() << ":" << location.line() << "\n";
+            std::cout << "[CallableProfiler] Caller function: " << location.function_name() << "\n";
+            std::cout << "[CallableProfiler] Total size of args:" << CallableType::total_arg_size << " bytes\n";
+#endif
+        }
 
         // Çağrıdan sonraki iş yıkıcıda çalışıyor; böylece çağrı ifadesini
         // doğrudan return edebiliyoruz. İsimli bir yerel değişken olmadığı için
@@ -298,7 +450,10 @@ private:
             if (std::uncaught_exceptions() != exceptions_on_entry) {
                 return; // çağrı fırlattı, sayacı raporlama
             }
+#if TEMPO_PRINT_ENABLED
+            const std::lock_guard<std::mutex> guard{state_mutex};
             std::cout << "[CallableProfiler] Call count: " << CallableType::call_count << "\n";
+#endif
         }
     };
 };
@@ -331,15 +486,54 @@ struct Metrics {
         typename detail::DecayedTuple<ArgsType>::Type,
         std::tuple<>>;
 
+    // call_count atomik ve wrapper üzerinde yaşıyor, doğrudan okunabilir.
+    inline static auto& call_count = CallableType::call_count;
+
+private:
+    // Toplanan istatistikler artık private: hepsi stats_mutex ile korunuyor ve
+    // dışarıdan yalnızca snapshot() üzerinden, tutarlı bir bütün olarak okunur.
+    // Atomik bir sayacı senkronize edilmemiş toplamların yanına koymak, olmayan
+    // bir garantiyi varmış gibi göstermek olurdu.
+    inline static std::mutex stats_mutex;
+    inline static bool has_samples = false;
     inline static Duration total_duration{0};
     inline static Duration max_duration{0};
     inline static Duration min_duration{0};
     inline static StoredArgsType min_args{};
     inline static StoredArgsType max_args{};
-    inline static auto& call_count = CallableType::call_count;
     inline static SourceLocation last_call_location{};
 
-    static SourceLocation get_last_call_location() { return last_call_location; }
+public:
+    // Tek bir çağrının tutarlı görüntüsü. Toplam ile min'i ayrı ayrı okumak
+    // yalnızca yarış değil, aynı zamanda TUTARSIZ olurdu: biri güncellemeden
+    // önceki, diğeri sonraki durumu gösterebilir.
+    struct Snapshot {
+        unsigned int calls = 0;
+        Duration total_duration{0};
+        Duration min_duration{0};
+        Duration max_duration{0};
+        StoredArgsType min_args{};
+        StoredArgsType max_args{};
+        SourceLocation last_call_location{};
+        bool has_samples = false;
+
+        double average_ms() const {
+            return calls ? total_duration.count() / calls : 0.0;
+        }
+    };
+
+    static Snapshot snapshot() {
+        const std::lock_guard<std::mutex> guard{stats_mutex};
+        return Snapshot{call_count.load(std::memory_order_relaxed),
+                        total_duration, min_duration, max_duration,
+                        min_args,       max_args,     last_call_location,
+                        has_samples};
+    }
+
+    static SourceLocation get_last_call_location() {
+        const std::lock_guard<std::mutex> guard{stats_mutex};
+        return last_call_location;
+    }
 
     // Wrapper'ı doğrudan tutuyoruz: Functor durumunda çağrılabilir nesnenin
     // kendisi burada yaşıyor, her çağrıda yeniden kurulamaz.
@@ -361,7 +555,9 @@ struct Metrics {
     }
 
     static void reset() {
-        call_count.store(0);
+        const std::lock_guard<std::mutex> guard{stats_mutex};
+        call_count.store(0, std::memory_order_relaxed);
+        has_samples = false;
         total_duration = Duration{0};
         max_duration = Duration{0};
         min_duration = Duration{0};
@@ -370,10 +566,30 @@ struct Metrics {
         last_call_location = SourceLocation{};
     }
 
+    // Bu örneklemeyi toplu rapora kaydeder. Fonksiyon içi static sayesinde
+    // yalnızca bir kez çalışır ve C++ bunu zaten thread-safe garanti eder.
+    static void ensure_registered() {
+        static const bool once = [] {
+            detail::add_to_registry(
+                [] {
+                    const Snapshot state = snapshot();
+                    return detail::ReportRow{std::string{detail::type_name<CallableType>()},
+                                             state.calls,
+                                             state.total_duration.count(),
+                                             state.min_duration.count(),
+                                             state.max_duration.count(),
+                                             state.has_samples};
+                },
+                [] { reset(); });
+            return true;
+        }();
+        (void)once;
+    }
+
     ReturnType call_at(SourceLocation location, auto&&... args) const
         requires std::invocable<const CallableType&, decltype(args)...>
     {
-        last_call_location = location;
+        ensure_registered();
 
         // Snapshot çağrıdan önce alınıyor (kopya), asıl çağrıya orijinaller
         // forward ediliyor. İki tarafa birden forward etmek moved-from değer
@@ -394,8 +610,14 @@ struct Metrics {
         return call_at(SourceLocation::current(), std::forward<decltype(args)>(args)...);
     }
 
-    StoredArgsType get_minimizers() const {return min_args;}
-    StoredArgsType get_maximizers() const {return max_args;}
+    StoredArgsType get_minimizers() const {
+        const std::lock_guard<std::mutex> guard{stats_mutex};
+        return min_args;
+    }
+    StoredArgsType get_maximizers() const {
+        const std::lock_guard<std::mutex> guard{stats_mutex};
+        return max_args;
+    }
 
 private:
     template <typename Instance, typename... MethodArgs>
@@ -410,20 +632,28 @@ private:
         Clock::time_point start = Clock::now();
 
         ~RecordOnExit() {
-            // Saati her şeyden önce durduruyoruz: buradan sonrası ölçüme dahil değil.
+            // Saat her şeyden önce, KİLİTTEN de önce duruyor: kilit beklemesi
+            // hiçbir zaman ölçülen süreye eklenmiyor.
             const Duration duration = Clock::now() - start;
 
             if (std::uncaught_exceptions() != exceptions_on_entry) {
                 return; // çağrı fırlattı, yarım kalan süreyi metriklere yazma
             }
 
+            // Tek kritik bölge: hem güncelleme hem raporlama. Rapor da kilidin
+            // içinde çünkü aksi hâlde iki iş parçacığının satırları birbirine
+            // girerdi. Kullanıcı fonksiyonu çoktan döndü, kilit onu tutmuyor.
+            const std::lock_guard<std::mutex> guard{stats_mutex};
+
+            last_call_location = location;
             total_duration += duration;
 
-            const bool is_new_max = duration > max_duration;
-            const bool is_new_min = (CallableType::call_count == 1) || duration < min_duration;
+            const bool is_new_max = !has_samples || duration > max_duration;
+            const bool is_new_min = !has_samples || duration < min_duration;
 
             if (is_new_max) { max_duration = duration; }
             if (is_new_min) { min_duration = duration; }
+            has_samples = true;
 
             if constexpr (tracks_args) {
                 // Snapshot'ı yalnızca gerçekten gerekiyorsa taşıyoruz; ikisi
@@ -436,16 +666,19 @@ private:
                 else if (is_new_min) { min_args = std::move(snapshot); }
             }
 
+#if TEMPO_PRINT_ENABLED
             // Buradan aşağısı saat durduktan sonra çalışıyor, ölçümü kirletmiyor.
+            const auto calls = CallableType::call_count.load(std::memory_order_relaxed);
             std::cout << "[CallableMetrics] Callable ran. Took: " << duration.count() << " ms\n";
             std::cout << "[CallableMetrics] Call location: " << location.file_name() << ":" << location.line() << "\n";
             std::cout << "[CallableMetrics] Caller function: " << location.function_name() << "\n";
-            std::cout << "[CallableMetrics] Call count: " << CallableType::call_count << "\n";
+            std::cout << "[CallableMetrics] Call count: " << calls << "\n";
             std::cout << "[CallableMetrics] Total size of args: " << CallableType::total_arg_size << " bytes\n";
             std::cout << "[CallableMetrics] Total time spent : " << total_duration.count() << " ms\n";
             std::cout << "[CallableMetrics] Min time : " << min_duration.count() << " ms\n";
             std::cout << "[CallableMetrics] Max time : " << max_duration.count() << " ms\n";
-            std::cout << "[CallableMetrics] Average time : " << (total_duration.count() / CallableType::call_count) << " ms\n";
+            std::cout << "[CallableMetrics] Average time : " << (calls ? total_duration.count() / calls : 0.0) << " ms\n";
+#endif
         }
     };
 

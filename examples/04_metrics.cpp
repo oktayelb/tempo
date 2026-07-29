@@ -33,18 +33,23 @@ struct Service {
 };
 
 void report(const char* label, auto& metrics) {
-    const auto fastest = metrics.get_minimizers();
-    const auto slowest = metrics.get_maximizers();
-    using Metrics = std::remove_reference_t<decltype(metrics)>;
+    using MetricsType = std::remove_reference_t<decltype(metrics)>;
+
+    // One consistent view of every statistic, taken under a single lock.
+    // Reading total and min separately would not just be a data race, it would
+    // be inconsistent: one could come from before an update and one from after.
+    const auto stats = MetricsType::snapshot();
 
     std::cout << "\n--- " << label << " -----------------------------\n";
-    std::cout << "calls    : " << Metrics::call_count << "\n";
-    std::cout << "total    : " << Metrics::total_duration.count() << " ms\n";
-    std::cout << "average  : " << Metrics::total_duration.count() / Metrics::call_count << " ms\n";
-    std::cout << "fastest  : " << Metrics::min_duration.count() << " ms"
-              << "  with args (" << std::get<0>(fastest) << ", " << std::get<1>(fastest) << ")\n";
-    std::cout << "slowest  : " << Metrics::max_duration.count() << " ms"
-              << "  with args (" << std::get<0>(slowest) << ", " << std::get<1>(slowest) << ")\n";
+    std::cout << "calls    : " << stats.calls << "\n";
+    std::cout << "total    : " << stats.total_duration.count() << " ms\n";
+    std::cout << "average  : " << stats.average_ms() << " ms\n";
+    std::cout << "fastest  : " << stats.min_duration.count() << " ms"
+              << "  with args (" << std::get<0>(stats.min_args)
+              << ", " << std::get<1>(stats.min_args) << ")\n";
+    std::cout << "slowest  : " << stats.max_duration.count() << " ms"
+              << "  with args (" << std::get<0>(stats.max_args)
+              << ", " << std::get<1>(stats.max_args) << ")\n";
 }
 
 int main() {
@@ -97,7 +102,9 @@ int main() {
 
     // --- reset() clears counters, totals and recorded arguments ---------------
     SleepMetrics::reset();
-    assert(SleepMetrics::call_count == 0);
-    assert(SleepMetrics::total_duration.count() == 0.0);
-    std::cout << "after reset(): call_count = " << SleepMetrics::call_count << "\n";
+    const auto cleared = SleepMetrics::snapshot();
+    assert(cleared.calls == 0);
+    assert(cleared.total_duration.count() == 0.0);
+    assert(!cleared.has_samples);
+    std::cout << "after reset(): call_count = " << cleared.calls << "\n";
 }
