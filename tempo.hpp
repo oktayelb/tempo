@@ -1,5 +1,11 @@
 #pragma once
 
+// tempo — Copyright (c) 2026 Oktay Elibüyük
+// Source-available, not open source. You may use, study, modify and extend this
+// software; you may NOT distribute it without prior written permission, either
+// standalone or embedded in another product, in source or compiled form.
+// See LICENSE for the full terms.
+
 #if defined(_MSC_VER)
 #if !defined(_MSVC_LANG) || _MSVC_LANG < 202002L
 #error "tempo requires C++20 support"
@@ -26,9 +32,9 @@
 #include <utility>
 #include <vector>
 
-// Her çağrıda satır satır rapor basılsın mı? 0 yaparsanız tüm cout çağrıları
-// derlemeden çıkar; istatistikler yine toplanır ve tempo::report() ile tek
-// seferde özet alırsınız. Include'dan ÖNCE tanımlayın.
+// Print a line-by-line report on every call? Set this to 0 and every cout call
+// leaves the build; statistics are still collected, and you get a single summary
+// from tempo::report(). Define it BEFORE the include.
 #ifndef TEMPO_PRINT_ENABLED
 #define TEMPO_PRINT_ENABLED 1
 #endif
@@ -56,8 +62,8 @@ concept SupportedCallable = FunctionPointer<Value> || MethodPointer<Value>;
 
 namespace detail {
 
-// Argümanları saklamak için imzadaki referansları soyuyoruz: std::tuple<const T&>
-// ne varsayılan kurulabilir ne de yeniden atanabilir.
+// To store arguments we strip the references off the signature:
+// std::tuple<const T&> is neither default constructible nor reassignable.
 template <typename Tuple>
 struct DecayedTuple;
 
@@ -66,8 +72,9 @@ struct DecayedTuple<std::tuple<Ts...>> {
     using Type = std::tuple<std::decay_t<Ts>...>;
 };
 
-// Argümanları ancak kopyalanabilir ve varsayılan kurulabilirlerse saklayabiliriz.
-// Sadece taşınabilir (unique_ptr gibi) argümanlarda saklama sessizce kapanır.
+// We can only store arguments that are copy constructible and default
+// constructible. For move-only arguments (unique_ptr and friends) storage is
+// silently switched off.
 template <typename Tuple>
 struct ArgsAreStorable;
 
@@ -76,13 +83,14 @@ struct ArgsAreStorable<std::tuple<Ts...>>
     : std::bool_constant<(std::copy_constructible<std::decay_t<Ts>> && ...) &&
                          (std::default_initializable<std::decay_t<Ts>> && ...)> {};
 
-// Şablona bağlı "false": static_assert yalnızca şablon gerçekten örneklendiğinde
-// patlasın diye. Düz "false" yazsaydık derleyici daha okumadan hata verirdi.
+// A template-dependent "false", so the static_assert only fires when the
+// template is actually instantiated. A plain "false" would make the compiler
+// reject it on sight, before any instantiation.
 template <typename...>
 inline constexpr bool always_false = false;
 
-// Bir üye fonksiyon işaretçisinin imzasını parçalıyoruz. Lambda ve functor'ların
-// imzasını &F::operator() üzerinden buradan okuyoruz.
+// Decomposes the signature of a member function pointer. This is how we read the
+// signature of lambdas and functors, via &F::operator().
 template <typename MemberPointer>
 struct MemberSignature;
 
@@ -118,8 +126,9 @@ struct MemberSignature<ret (Owner::*)(args...) const noexcept> {
     static constexpr auto total_arg_size = (sizeof(args) + ... + 0);
 };
 
-// Tip adını __PRETTY_FUNCTION__'dan kazıyoruz; özet tablosunda "Callable<fibonacci>"
-// gibi okunur bir ad çıksın diye. typeid(...).name() mangled ve okunmaz olurdu.
+// Scrapes the type name out of __PRETTY_FUNCTION__, so the summary table shows a
+// readable name like "Callable<fibonacci>". typeid(...).name() would be mangled
+// and unreadable.
 template <typename T>
 constexpr std::string_view type_name() {
 #if defined(__clang__)
@@ -141,9 +150,9 @@ constexpr std::string_view type_name() {
     return text.substr(begin, end - begin);
 }
 
-// Toplu raporlama için kayıt defteri. Her Metrics örneklemesi ilk çağrısında
-// kendi satırını getiren bir fonksiyonu buraya bırakıyor; tempo::report() hepsini
-// toplayıp sıralı tek bir tablo basıyor.
+// The registry behind aggregated reporting. On its first call, every Metrics
+// instantiation drops a function here that fetches its own row; tempo::report()
+// collects them all and prints one sorted table.
 struct ReportRow {
     std::string name;
     unsigned int calls = 0;
@@ -164,7 +173,8 @@ struct Registry {
     std::vector<Resetter> resetters;
 };
 
-// Fonksiyon içi static: statik başlatma sırası sorunu yok, ilk kullanımda kurulur.
+// A function-local static: no static initialization order problem, it is
+// constructed on first use.
 inline Registry& registry() {
     static Registry instance;
     return instance;
@@ -179,7 +189,7 @@ inline void add_to_registry(RowFetcher fetcher, Resetter resetter) {
 
 } // namespace detail
 
-// Tüm kayıtlı metriklerin özeti, toplam süreye göre sıralı tek tablo.
+// A summary of every registered metric: one table, sorted by total time.
 inline void report(std::ostream& out = std::cout) {
     std::vector<detail::ReportRow> rows;
     {
@@ -227,27 +237,28 @@ inline void report(std::ostream& out = std::cout) {
     out << std::string(width + 56, '=') << "\n";
 }
 
-// Kayıtlı bütün metrikleri sıfırlar.
+// Resets every registered metric.
 inline void reset_all() {
     detail::Registry& reg = detail::registry();
     const std::lock_guard<std::mutex> guard{reg.mutex};
     for (const detail::Resetter reset : reg.resetters) { reset(); }
 }
 
-// Program biterken özeti otomatik bastırmak isteyenler için.
+// For those who want the summary printed automatically when the program ends.
 inline void report_at_exit(std::ostream& out = std::cout) {
     struct AtExit {
         std::ostream* stream;
         ~AtExit() { report(*stream); }
     };
-    static AtExit guard{&out};   // yıkıcısı program sonunda çalışır
+    static AtExit guard{&out};   // its destructor runs at program exit
     (void)guard;
 }
 
-// Çağrılabilir nesne: lambda, functor, std::function. Tek ve şablon olmayan bir
-// operator() gerekiyor -- generic lambda ([](auto x){...}) ve operator()'ı
-// overload edilmiş functor'lar burada eleniyor, çünkü çağrılmadan önce imzaları
-// yok. Eleme sessiz değil: kısıt sağlanmadı hatası alırsınız.
+// A callable object: lambda, functor, std::function. It needs a single,
+// non-template operator() -- generic lambdas ([](auto x){...}) and functors with
+// an overloaded operator() are rejected here, because they have no signature
+// until they are called. The rejection is not silent: you get a constraint-not-
+// satisfied error.
 template <typename F>
 concept CallableObject =
     std::is_class_v<F> &&
@@ -270,9 +281,9 @@ struct Function<func_ptr>{
     static constexpr auto total_arg_size = (sizeof(args) + ... + 0);
     inline static std::atomic<unsigned int> call_count{0};
 
-    // Parametreler forwarding reference: argüman func_ptr'ye kendi value
-    // category'siyle, aradan kopya çıkmadan ulaşıyor. std::invocable kısıtı
-    // hatayı std::invoke'un içinde değil çağrı yerinde tutuyor.
+    // The parameters are forwarding references: an argument reaches func_ptr with
+    // its own value category, without a copy in between. The std::invocable
+    // constraint keeps the error at the call site rather than inside std::invoke.
     template <typename... CallArgs>
         requires std::invocable<decltype(func_ptr), CallArgs...>
     ReturnType operator()(CallArgs&&... call_args) const {
@@ -299,8 +310,8 @@ struct Method<method>{
     static constexpr auto total_arg_size = (sizeof(args) +  ... +  0);
     inline static std::atomic<unsigned int> call_count{0};
 
-    // Instance de forward ediliyor: std::invoke sayesinde ClassName&,
-    // ClassName*, std::reference_wrapper ve akıllı işaretçiler de geçerli.
+    // The instance is forwarded too: thanks to std::invoke, ClassName&,
+    // ClassName*, std::reference_wrapper and smart pointers all work.
     template <typename Self, typename... CallArgs>
         requires std::invocable<decltype(method), Self, CallArgs...>
     ReturnType operator()(Self&& self, CallArgs&&... call_args) const {
@@ -353,10 +364,10 @@ struct Callable : CallableImplementation<CallableValue>::Type {
     using CallableType::operator();
 };
 
-// Function ve Method durum tutmaz, o yüzden şablon argümanı bir işaretçi
-// (NTTP) olabiliyor. Lambda ve functor ise NESNEDİR: yakalama yapan bir lambda
-// hiçbir zaman NTTP olamaz. Bu yüzden Functor tipe göre şablonlanır ve
-// çağrılabilir nesnenin kendisini içinde taşır.
+// Function and Method hold no state, so their template argument can be a pointer
+// (an NTTP). Lambdas and functors, however, are OBJECTS: a capturing lambda can
+// never be an NTTP. That is why Functor is templated on the type and carries the
+// callable object itself inside.
 template <typename F>
 requires CallableObject<F>
 struct Functor {
@@ -366,8 +377,8 @@ struct Functor {
     using ArgsType   = typename SignatureType::ArgsType;
     using ClassType  = F;
 
-    // Örneği çağıran taraf ayrıca geçmediği için is_member false; nesne
-    // wrapper'ın içinde duruyor.
+    // is_member is false because the caller does not pass the instance
+    // separately; the object lives inside the wrapper.
     static constexpr bool is_member = false;
     static constexpr bool is_const_member = false;
     static constexpr bool is_functor = true;
@@ -375,13 +386,13 @@ struct Functor {
     static constexpr auto arg_count = std::tuple_size_v<ArgsType>;
     static constexpr auto total_arg_size = SignatureType::total_arg_size;
 
-    // Sayaç tipe bağlı. Her lambda İFADESİ kendi benzersiz closure tipini
-    // ürettiği için bu lambda başına ayrı sayaç demek. Aynı tipten iki nesne
-    // (iki std::function<int(int)> gibi) ise sayacı PAYLAŞIR.
+    // The counter is tied to the type. Since every lambda EXPRESSION produces its
+    // own unique closure type, this means a separate counter per lambda. Two
+    // objects of the same type (two std::function<int(int)>, say) SHARE a counter.
     inline static std::atomic<unsigned int> call_count{0};
 
-    // mutable: mutable lambda'ların operator()'ı const değil, ama Profiler ve
-    // Metrics zinciri const üzerinden çağırıyor.
+    // mutable: the operator() of a mutable lambda is not const, but the Profiler
+    // and Metrics chain calls through a const path.
     mutable F target;
 
     template <typename... CallArgs>
@@ -393,10 +404,10 @@ struct Functor {
 };
 
 
-// C++20 sonrasında TMP daha temiz
+// TMP is cleaner since C++20.
 //
-// Wrapper tipine göre şablonlanıyor (Callable<&f> ya da Functor<Lambda>), NTTP'ye
-// göre değil: bir lambda şablon argümanı olamaz ama tipi olabilir.
+// Templated on the wrapper type (Callable<&f> or Functor<Lambda>), not on an
+// NTTP: a lambda cannot be a template argument, but its type can.
 template <typename WrapperType>
 struct Profiler{
 
@@ -406,9 +417,9 @@ struct Profiler{
 
     using SourceLocation = std::source_location;
 
-    // Paylaşılan durumu koruyan kilit. Kilit ASLA kullanıcı fonksiyonu
-    // çağrılırken tutulmuyor -- yalnızca kısa kritik bölgelerde alınıyor, o
-    // yüzden ne kilitlenme ne de ölçülen kodun serileşmesi söz konusu.
+    // The lock guarding shared state. It is NEVER held while the user's function
+    // runs -- it is taken only for short critical sections, so there is neither a
+    // deadlock risk nor any serialization of the code being measured.
     inline static std::mutex state_mutex;
     inline static SourceLocation last_call_location{};
 
@@ -434,9 +445,9 @@ struct Profiler{
 #endif
         }
 
-        // Çağrıdan sonraki iş yıkıcıda çalışıyor; böylece çağrı ifadesini
-        // doğrudan return edebiliyoruz. İsimli bir yerel değişken olmadığı için
-        // dönüş değeri hiç kopyalanmıyor/taşınmıyor (garantili copy elision).
+        // The post-call work happens in a destructor, which lets us return the
+        // call expression directly. Because there is no named local variable, the
+        // return value is never copied or moved (guaranteed copy elision).
         [[maybe_unused]] const ReportOnExit report{};
         return callable(std::forward<decltype(args)>(args)...);
     }
@@ -453,7 +464,7 @@ private:
 
         ~ReportOnExit() {
             if (std::uncaught_exceptions() != exceptions_on_entry) {
-                return; // çağrı fırlattı, sayacı raporlama
+                return; // the call threw, do not report the counter
             }
 #if TEMPO_PRINT_ENABLED
             const std::lock_guard<std::mutex> guard{state_mutex};
@@ -463,16 +474,16 @@ private:
     };
 };
 
-// Eski isim korunuyor: TEMPO_CALLABLE_PROFILER ve mevcut kod aynen çalışsın.
+// The old name is kept so TEMPO_CALLABLE_PROFILER and existing code still work.
 template <auto CallableValue>
 requires SupportedCallable<CallableValue>
 using CallableProfiler = Profiler<Callable<CallableValue>>;
 //-------------------------------------------------------------------
-// Ölçüm yapan taraf Profiler'a DELEGE ETMEZ. Profiler her çağrıda beş satır
-// yazıyor; Metrics onun üzerinden çağırsaydı bu I/O ölçüm penceresinin içinde
-// kalırdı ve tek bir çağrının "süresi" birkaç mikrosaniyelik cout maliyetiyle
-// başlardı. Burada zamanlanan tek şey çağrının kendisi; raporlama saat
-// durdurulduktan sonra yapılıyor.
+// The measuring side does NOT delegate to Profiler. Profiler writes five lines on
+// every call; if Metrics went through it, that I/O would land inside the
+// measurement window and a single call's "duration" would start with a few
+// microseconds of cout cost. The only thing timed here is the call itself;
+// reporting happens after the clock has stopped.
 template <typename WrapperType>
 struct Metrics {
 
@@ -480,30 +491,31 @@ struct Metrics {
     using ReturnType = typename CallableType::ReturnType;
     using ArgsType   = typename CallableType::ArgsType;
     using SourceLocation = std::source_location;
-    // steady_clock, high_resolution_clock DEĞİL. libstdc++'ta high_resolution_clock
-    // system_clock'un takma adıdır (is_steady == false): duvar saati NTP ile geri
-    // alınırsa iki Clock::now() farkı negatif ya da saçma çıkar. Süre ölçmenin tek
-    // doğru saati monotonik olandır.
+    // steady_clock, NOT high_resolution_clock. On libstdc++ high_resolution_clock
+    // is an alias for system_clock (is_steady == false): if the wall clock is
+    // stepped backwards by NTP, the difference between two Clock::now() calls
+    // comes out negative or nonsensical. The only correct clock for measuring
+    // durations is a monotonic one.
     using Clock = std::chrono::steady_clock;
-    static_assert(Clock::is_steady, "tempo sure olcumu icin monotonik saat gerektirir");
+    static_assert(Clock::is_steady, "tempo requires a monotonic clock to measure durations");
     using Duration = std::chrono::duration<double, std::milli>;
 
     static constexpr bool tracks_args = detail::ArgsAreStorable<ArgsType>::value;
 
-    // İmzadaki referanslar soyulmuş hâli: saklanabilir, atanabilir.
+    // The signature with its references stripped: storable and assignable.
     using StoredArgsType = std::conditional_t<
         tracks_args,
         typename detail::DecayedTuple<ArgsType>::Type,
         std::tuple<>>;
 
-    // call_count atomik ve wrapper üzerinde yaşıyor, doğrudan okunabilir.
+    // call_count is atomic and lives on the wrapper, so it can be read directly.
     inline static auto& call_count = CallableType::call_count;
 
 private:
-    // Toplanan istatistikler artık private: hepsi stats_mutex ile korunuyor ve
-    // dışarıdan yalnızca snapshot() üzerinden, tutarlı bir bütün olarak okunur.
-    // Atomik bir sayacı senkronize edilmemiş toplamların yanına koymak, olmayan
-    // bir garantiyi varmış gibi göstermek olurdu.
+    // The collected statistics are private: all of them are guarded by
+    // stats_mutex and are read from outside only through snapshot(), as one
+    // consistent whole. Putting an atomic counter next to unsynchronized totals
+    // would advertise a guarantee that does not exist.
     inline static std::mutex stats_mutex;
     inline static bool has_samples = false;
     inline static Duration total_duration{0};
@@ -514,9 +526,9 @@ private:
     inline static SourceLocation last_call_location{};
 
 public:
-    // Tek bir çağrının tutarlı görüntüsü. Toplam ile min'i ayrı ayrı okumak
-    // yalnızca yarış değil, aynı zamanda TUTARSIZ olurdu: biri güncellemeden
-    // önceki, diğeri sonraki durumu gösterebilir.
+    // A consistent view taken in one go. Reading the total and the min separately
+    // would not just be a data race, it would be INCONSISTENT: one could reflect
+    // the state before an update and the other the state after it.
     struct Snapshot {
         unsigned int calls = 0;
         Duration total_duration{0};
@@ -545,13 +557,13 @@ public:
         return last_call_location;
     }
 
-    // Wrapper'ı doğrudan tutuyoruz: Functor durumunda çağrılabilir nesnenin
-    // kendisi burada yaşıyor, her çağrıda yeniden kurulamaz.
+    // We hold the wrapper directly: in the Functor case the callable object
+    // itself lives here, and must not be reconstructed on every call.
     CallableType callable;
 
-    // Dikkat: burada bilerek forward ETMİYORUZ. Argümanlar asıl çağrıya forward
-    // edileceği için oradan taşınmış (moved-from) olabilirler; snapshot'ı çağrı
-    // ÖNCESİNDE ve kopyalayarak alıyoruz ki sakladığımız değerler doğru olsun.
+    // Note: we deliberately do NOT forward here. The arguments will be forwarded
+    // to the real call and may be left moved-from by it, so we take the snapshot
+    // BEFORE the call and by copy, to make sure the values we store are correct.
     static StoredArgsType make_args_snapshot(const auto&... args) {
         if constexpr (!tracks_args) {
             return StoredArgsType{};
@@ -576,8 +588,9 @@ public:
         last_call_location = SourceLocation{};
     }
 
-    // Bu örneklemeyi toplu rapora kaydeder. Fonksiyon içi static sayesinde
-    // yalnızca bir kez çalışır ve C++ bunu zaten thread-safe garanti eder.
+    // Registers this instantiation with the aggregated report. Thanks to the
+    // function-local static it runs exactly once, and C++ already guarantees
+    // that to be thread-safe.
     static void ensure_registered() {
         static const bool once = [] {
             detail::add_to_registry(
@@ -601,15 +614,16 @@ public:
     {
         ensure_registered();
 
-        // Snapshot çağrıdan önce alınıyor (kopya), asıl çağrıya orijinaller
-        // forward ediliyor. İki tarafa birden forward etmek moved-from değer
-        // saklamaya yol açardı.
+        // The snapshot is taken before the call (by copy), while the originals are
+        // forwarded to the real call. Forwarding to both would end up storing
+        // moved-from values.
         StoredArgsType snapshot = make_args_snapshot(args...);
 
-        // Saat, guard kurulurken başlıyor ve yıkıcının İLK satırında duruyor;
-        // arada yalnızca çağrının kendisi var. Raporlama saat durduktan sonra.
-        // Dönüş değeri isimli bir yerele uğramadığı için hiç kopyalanmıyor,
-        // taşınamayan tipler bile geçiyor.
+        // The clock starts as the guard is constructed and stops on the FIRST line
+        // of its destructor; in between there is nothing but the call itself.
+        // Reporting happens after the clock has stopped. Since the return value
+        // never passes through a named local it is never copied, so even
+        // non-movable types get through.
         [[maybe_unused]] const RecordOnExit record{location, snapshot};
         return callable(std::forward<decltype(args)>(args)...);
     }
@@ -642,17 +656,18 @@ private:
         Clock::time_point start = Clock::now();
 
         ~RecordOnExit() {
-            // Saat her şeyden önce, KİLİTTEN de önce duruyor: kilit beklemesi
-            // hiçbir zaman ölçülen süreye eklenmiyor.
+            // The clock stops before anything else, and before the LOCK in
+            // particular: waiting on the lock is never added to the measurement.
             const Duration duration = Clock::now() - start;
 
             if (std::uncaught_exceptions() != exceptions_on_entry) {
-                return; // çağrı fırlattı, yarım kalan süreyi metriklere yazma
+                return; // the call threw, do not record a half-finished duration
             }
 
-            // Tek kritik bölge: hem güncelleme hem raporlama. Rapor da kilidin
-            // içinde çünkü aksi hâlde iki iş parçacığının satırları birbirine
-            // girerdi. Kullanıcı fonksiyonu çoktan döndü, kilit onu tutmuyor.
+            // One critical section covering both the update and the reporting.
+            // The report is inside the lock too, because otherwise the lines from
+            // two threads would interleave. The user's function has already
+            // returned, so the lock is not holding it.
             const std::lock_guard<std::mutex> guard{stats_mutex};
 
             last_call_location = location;
@@ -666,8 +681,8 @@ private:
             has_samples = true;
 
             if constexpr (tracks_args) {
-                // Snapshot'ı yalnızca gerçekten gerekiyorsa taşıyoruz; ikisi
-                // birden tetiklenirse tek kopya yetiyor.
+                // We only move the snapshot when it is actually needed; if both
+                // fire at once, a single copy is enough.
                 if (is_new_max && is_new_min) {
                     max_args = snapshot;
                     min_args = std::move(snapshot);
@@ -677,7 +692,8 @@ private:
             }
 
 #if TEMPO_PRINT_ENABLED
-            // Buradan aşağısı saat durduktan sonra çalışıyor, ölçümü kirletmiyor.
+            // Everything below runs after the clock has stopped, so it does not
+            // pollute the measurement.
             const auto calls = CallableType::call_count.load(std::memory_order_relaxed);
             std::cout << "[CallableMetrics] Callable ran. Took: " << duration.count() << " ms\n";
             std::cout << "[CallableMetrics] Call location: " << location.file_name() << ":" << location.line() << "\n";
@@ -694,17 +710,18 @@ private:
 
     };
 
-// Eski isim korunuyor: TEMPO_CALLABLE_METRICS ve mevcut kod aynen çalışsın.
+// The old name is kept so TEMPO_CALLABLE_METRICS and existing code still work.
 template <auto CallableValue>
 requires SupportedCallable<CallableValue>
 using CallableMetrics = Metrics<Callable<CallableValue>>;
 
 //-------------------------------------------------------------------
-// Lambda ve functor'lar için fabrikalar.
+// Factories for lambdas and functors.
 //
-// Fonksiyon işaretçilerinde tip adını makroyla yazabiliyoruz
-// (TEMPO_CALLABLE_METRICS(f)) çünkü &f bir şablon argümanı. Bir lambda için bu
-// mümkün değil: nesneyi geçmek ve tipini çıkarım yoluyla almak zorundayız.
+// For function pointers we can spell the type name with a macro
+// (TEMPO_CALLABLE_METRICS(f)), because &f is a template argument. That is not
+// possible for a lambda: we have to pass the object and pick up its type by
+// deduction.
 template <typename F>
 requires CallableObject<std::decay_t<F>>
 auto wrap(F&& target) {
@@ -733,25 +750,27 @@ struct ConstructorProfiler{
 
     inline static std::atomic<unsigned int> obj_count{0};
 
-    // Derleme zamanı sorgu: ClassType bu argümanlardan kurulabiliyor mu?
-    // Kendi kodunuzda static_assert(Profiler::can_construct<int, int>) diye
-    // doğrudan sorabilirsiniz.
+    // A compile-time query: can ClassType be constructed from these arguments?
+    // You can ask directly from your own code with
+    // static_assert(Profiler::can_construct<int, int>).
     template <typename... Args>
     static constexpr bool can_construct = std::constructible_from<ClassType, Args...>;
 
-    // Argümanlar yapıcıya forward ediliyor: taşınabilir argümanlar taşınıyor,
-    // prvalue döndürüldüğü için nesne doğrudan çağıranın yerinde kuruluyor
-    // (garantili copy elision) -- kopyalanamayan/taşınamayan tipler de çalışıyor.
+    // The arguments are forwarded to the constructor: movable arguments are
+    // moved, and because a prvalue is returned the object is constructed directly
+    // in the caller's storage (guaranteed copy elision) -- so non-copyable and
+    // non-movable types work too.
     //
-    // Sayaç NE ZAMAN artıyor? Nesne kurulduktan SONRA. "return ClassType(...)"
-    // önce çağıranın dönüş nesnesini ilklendirir, YEREL değişkenler ancak ondan
-    // sonra yıkılır -- yani counter'ın yıkıcısı yapıcı başarıyla bittikten sonra
-    // çalışır. Yapıcı fırlatırsa yığın çözülürken uncaught_exceptions() girişteki
-    // değerden farklı olur ve sayaç hiç artmaz.
+    // WHEN does the counter increment? AFTER the object is constructed.
+    // "return ClassType(...)" first initializes the caller's return object, and
+    // LOCAL variables are destroyed only after that -- so the counter's
+    // destructor runs once the constructor has finished successfully. If the
+    // constructor throws, uncaught_exceptions() during unwinding differs from the
+    // value on entry and the counter never increments.
     //
-    // Nesneyi isimli bir yerele alıp "obj_count++; return obj;" demek daha açık
-    // görünürdü ama dönüşü kopya/taşımaya mecbur bırakır ve aşağıdaki gibi
-    // kopyalanamaz-taşınamaz tipleri derlenemez hâle getirirdi.
+    // Binding the object to a named local and writing "obj_count++; return obj;"
+    // would look clearer, but it would force a copy or move on the return and
+    // make non-copyable, non-movable types like the one below fail to compile.
     template <typename... Args>
         requires std::constructible_from<ClassType, Args...>
     ClassType operator() (Args&&... args) const {
@@ -759,16 +778,17 @@ struct ConstructorProfiler{
         return ClassType(std::forward<Args>(args)...);
         };
 
-    // Yalnızca yukarıdaki uygun DEĞİLKEN seçilir. Tek işi, "no match for call"
-    // yerine ne olduğunu söyleyen bir hata mesajı vermek.
-    // Dönüş tipi bilerek ClassType: "auto p = make(...)" yazan kod ayrıca
-    // "deduced type void is incomplete" hatası almasın, tek ve net mesaj kalsın.
+    // Selected only when the overload above is NOT viable. Its sole job is to
+    // produce an error message that says what happened, instead of "no match for
+    // call". The return type is deliberately ClassType so that code writing
+    // "auto p = make(...)" does not additionally get a "deduced type void is
+    // incomplete" error -- one clear message is enough.
     template <typename... Args>
         requires (!std::constructible_from<ClassType, Args...>)
     ClassType operator() (Args&&...) const {
         static_assert(detail::always_false<Args...>,
-            "tempo::ConstructorProfiler: ClassType bu argumanlarla kurulamiyor. "
-            "Eslesen bir yapici yok -- argumanlarin sayisini ve turlerini kontrol edin.");
+            "tempo::ConstructorProfiler: ClassType cannot be constructed from these arguments. "
+            "No matching constructor -- check the number and types of the arguments.");
     }
 
 private:
