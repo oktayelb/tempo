@@ -40,10 +40,23 @@ cd examples && make run
 | `04_metrics.cpp` | timings plus the arguments that produced them |
 | `05_constructors.cpp` | counting object construction |
 | `06_worst_input.cpp` | finding the input that made a function slow |
+| `07_lambdas.cpp` | lambdas, functors and `std::function` |
+
+Lambdas and functors are objects, not pointers, so they cannot be template
+arguments. Use the factories instead of the macros:
+
+```cpp
+auto m = tempo::measure([](int rounds, int id) { /* ... */ return id; });
+TEMPO_METRICS_CALL(m, 12, 302);
+std::get<1>(m.get_maximizers());   // 302
+```
 
 ## Known limits
 
-`noexcept` functions, overloaded names, lambdas and functors are not supported
-yet. Reports are printed per call rather than aggregated, and that printing
-happens inside the timed region — fine for millisecond workloads, not for
-measuring anything that returns in nanoseconds.
+Generic lambdas (`[](auto x){}`) and overloaded `operator()` are rejected — they
+have no signature until called. `noexcept` free functions and overloaded
+function names are not supported yet. Counters are static per wrapped type, so
+every `std::function<int(int)>` in a program shares one counter; wrap the
+underlying lambda instead. Reports are printed per call rather than aggregated,
+and that printing happens inside the timed region — fine for millisecond
+workloads, not for measuring anything that returns in nanoseconds.

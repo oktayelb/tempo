@@ -62,7 +62,53 @@ struct ArgsAreStorable<std::tuple<Ts...>>
     : std::bool_constant<(std::copy_constructible<std::decay_t<Ts>> && ...) &&
                          (std::default_initializable<std::decay_t<Ts>> && ...)> {};
 
+// Bir üye fonksiyon işaretçisinin imzasını parçalıyoruz. Lambda ve functor'ların
+// imzasını &F::operator() üzerinden buradan okuyoruz.
+template <typename MemberPointer>
+struct MemberSignature;
+
+template <typename Owner, typename ret, typename... args>
+struct MemberSignature<ret (Owner::*)(args...)> {
+    using ReturnType = ret;
+    using ArgsType = std::tuple<args...>;
+    static constexpr bool is_const = false;
+    static constexpr auto total_arg_size = (sizeof(args) + ... + 0);
+};
+
+template <typename Owner, typename ret, typename... args>
+struct MemberSignature<ret (Owner::*)(args...) const> {
+    using ReturnType = ret;
+    using ArgsType = std::tuple<args...>;
+    static constexpr bool is_const = true;
+    static constexpr auto total_arg_size = (sizeof(args) + ... + 0);
+};
+
+template <typename Owner, typename ret, typename... args>
+struct MemberSignature<ret (Owner::*)(args...) noexcept> {
+    using ReturnType = ret;
+    using ArgsType = std::tuple<args...>;
+    static constexpr bool is_const = false;
+    static constexpr auto total_arg_size = (sizeof(args) + ... + 0);
+};
+
+template <typename Owner, typename ret, typename... args>
+struct MemberSignature<ret (Owner::*)(args...) const noexcept> {
+    using ReturnType = ret;
+    using ArgsType = std::tuple<args...>;
+    static constexpr bool is_const = true;
+    static constexpr auto total_arg_size = (sizeof(args) + ... + 0);
+};
+
 } // namespace detail
+
+// Çağrılabilir nesne: lambda, functor, std::function. Tek ve şablon olmayan bir
+// operator() gerekiyor -- generic lambda ([](auto x){...}) ve operator()'ı
+// overload edilmiş functor'lar burada eleniyor, çünkü çağrılmadan önce imzaları
+// yok. Eleme sessiz değil: kısıt sağlanmadı hatası alırsınız.
+template <typename F>
+concept CallableObject =
+    std::is_class_v<F> &&
+    requires { &F::operator(); };
 
 template<auto Func>
 requires FunctionPointer<Func>
@@ -76,6 +122,7 @@ struct Function<func_ptr>{
     using  ClassType  = void;
     static constexpr bool is_member = false;
     static constexpr bool is_const_member = false;
+    static constexpr bool is_functor = false;
     static constexpr auto arg_count = sizeof...(args);
     static constexpr auto total_arg_size = (sizeof(args) + ... + 0);
     inline static std::atomic<unsigned int> call_count{0};
@@ -104,6 +151,7 @@ struct Method<method>{
     using ClassType = ClassName;
     static constexpr bool is_member = true;
     static constexpr bool is_const_member = false;
+    static constexpr bool is_functor = false;
     static constexpr auto arg_count = sizeof...(args);
     static constexpr auto total_arg_size = (sizeof(args) +  ... +  0);
     inline static std::atomic<unsigned int> call_count{0};
@@ -126,6 +174,7 @@ struct Method<method>{
     using ClassType = ClassName;
     static constexpr bool is_member = true;
     static constexpr bool is_const_member = true;
+    static constexpr bool is_functor = false;
     static constexpr auto arg_count = sizeof...(args);
     static constexpr auto total_arg_size = (sizeof(args) +  ... +  0);
     inline static std::atomic<unsigned int> call_count{0};
@@ -161,13 +210,54 @@ struct Callable : CallableImplementation<CallableValue>::Type {
     using CallableType::operator();
 };
 
+// Function ve Method durum tutmaz, o yüzden şablon argümanı bir işaretçi
+// (NTTP) olabiliyor. Lambda ve functor ise NESNEDİR: yakalama yapan bir lambda
+// hiçbir zaman NTTP olamaz. Bu yüzden Functor tipe göre şablonlanır ve
+// çağrılabilir nesnenin kendisini içinde taşır.
+template <typename F>
+requires CallableObject<F>
+struct Functor {
+
+    using SignatureType = detail::MemberSignature<decltype(&F::operator())>;
+    using ReturnType = typename SignatureType::ReturnType;
+    using ArgsType   = typename SignatureType::ArgsType;
+    using ClassType  = F;
+
+    // Örneği çağıran taraf ayrıca geçmediği için is_member false; nesne
+    // wrapper'ın içinde duruyor.
+    static constexpr bool is_member = false;
+    static constexpr bool is_const_member = false;
+    static constexpr bool is_functor = true;
+    static constexpr bool is_const_callable = SignatureType::is_const;
+    static constexpr auto arg_count = std::tuple_size_v<ArgsType>;
+    static constexpr auto total_arg_size = SignatureType::total_arg_size;
+
+    // Sayaç tipe bağlı. Her lambda İFADESİ kendi benzersiz closure tipini
+    // ürettiği için bu lambda başına ayrı sayaç demek. Aynı tipten iki nesne
+    // (iki std::function<int(int)> gibi) ise sayacı PAYLAŞIR.
+    inline static std::atomic<unsigned int> call_count{0};
+
+    // mutable: mutable lambda'ların operator()'ı const değil, ama Profiler ve
+    // Metrics zinciri const üzerinden çağırıyor.
+    mutable F target;
+
+    template <typename... CallArgs>
+        requires std::invocable<F&, CallArgs...>
+    ReturnType operator()(CallArgs&&... call_args) const {
+        call_count++;
+        return std::invoke(target, std::forward<CallArgs>(call_args)...);
+    }
+};
+
 
 // C++20 sonrasında TMP daha temiz
-template <auto CallableValue>
-requires SupportedCallable<CallableValue>
-struct CallableProfiler{
+//
+// Wrapper tipine göre şablonlanıyor (Callable<&f> ya da Functor<Lambda>), NTTP'ye
+// göre değil: bir lambda şablon argümanı olamaz ama tipi olabilir.
+template <typename WrapperType>
+struct Profiler{
 
-    using CallableType = Callable<CallableValue>;
+    using CallableType = WrapperType;
     using ReturnType = typename CallableType::ReturnType;
     using ArgsType = typename CallableType::ArgsType;
 
@@ -212,13 +302,17 @@ private:
         }
     };
 };
-//-------------------------------------------------------------------
+
+// Eski isim korunuyor: TEMPO_CALLABLE_PROFILER ve mevcut kod aynen çalışsın.
 template <auto CallableValue>
 requires SupportedCallable<CallableValue>
-struct CallableMetrics {
+using CallableProfiler = Profiler<Callable<CallableValue>>;
+//-------------------------------------------------------------------
+template <typename WrapperType>
+struct Metrics {
 
-    using ProfilerType = CallableProfiler<CallableValue>;
-    using CallableType = Callable<CallableValue>;
+    using ProfilerType = Profiler<WrapperType>;
+    using CallableType = WrapperType;
     using ReturnType = typename CallableType::ReturnType;
     using ArgsType   = typename CallableType::ArgsType;
     using SourceLocation = std::source_location;
@@ -243,6 +337,10 @@ struct CallableMetrics {
 
     static SourceLocation get_last_call_location() { return last_call_location; }
 
+    // Profiler'ı üye olarak tutuyoruz: Functor durumunda çağrılabilir nesnenin
+    // kendisi burada yaşıyor, her çağrıda yeniden kurulamaz.
+    ProfilerType profiler;
+
     // Dikkat: burada bilerek forward ETMİYORUZ. Argümanlar asıl çağrıya forward
     // edileceği için oradan taşınmış (moved-from) olabilirler; snapshot'ı çağrı
     // ÖNCESİNDE ve kopyalayarak alıyoruz ki sakladığımız değerler doğru olsun.
@@ -250,7 +348,7 @@ struct CallableMetrics {
         if constexpr (!tracks_args) {
             return StoredArgsType{};
         }
-        else if constexpr (std::is_member_function_pointer_v<decltype(CallableValue)>) {
+        else if constexpr (CallableType::is_member) {
             return make_args_snapshot_without_instance(args...);
         }
         else {
@@ -278,7 +376,6 @@ struct CallableMetrics {
         // saklamaya yol açardı.
         StoredArgsType snapshot = make_args_snapshot(args...);
 
-        ProfilerType profiler;
         // Ölçüm ve raporlama yıkıcıda: dönüş değeri isimli bir yerele
         // uğramadığı için hiç kopyalanmıyor, taşınamayan tipler bile geçiyor.
         [[maybe_unused]] const RecordOnExit record{location, snapshot};
@@ -342,6 +439,36 @@ private:
     };
 
     };
+
+// Eski isim korunuyor: TEMPO_CALLABLE_METRICS ve mevcut kod aynen çalışsın.
+template <auto CallableValue>
+requires SupportedCallable<CallableValue>
+using CallableMetrics = Metrics<Callable<CallableValue>>;
+
+//-------------------------------------------------------------------
+// Lambda ve functor'lar için fabrikalar.
+//
+// Fonksiyon işaretçilerinde tip adını makroyla yazabiliyoruz
+// (TEMPO_CALLABLE_METRICS(f)) çünkü &f bir şablon argümanı. Bir lambda için bu
+// mümkün değil: nesneyi geçmek ve tipini çıkarım yoluyla almak zorundayız.
+template <typename F>
+requires CallableObject<std::decay_t<F>>
+auto wrap(F&& target) {
+    return Functor<std::decay_t<F>>{std::forward<F>(target)};
+}
+
+template <typename F>
+requires CallableObject<std::decay_t<F>>
+auto profile(F&& target) {
+    return Profiler<Functor<std::decay_t<F>>>{wrap(std::forward<F>(target))};
+}
+
+template <typename F>
+requires CallableObject<std::decay_t<F>>
+auto measure(F&& target) {
+    return Metrics<Functor<std::decay_t<F>>>{profile(std::forward<F>(target))};
+}
+//-------------------------------------------------------------------
 
 template <typename ClassType>
 concept IsClass = std::is_class_v<ClassType>;
