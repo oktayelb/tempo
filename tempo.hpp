@@ -480,7 +480,12 @@ struct Metrics {
     using ReturnType = typename CallableType::ReturnType;
     using ArgsType   = typename CallableType::ArgsType;
     using SourceLocation = std::source_location;
-    using Clock = std::chrono::high_resolution_clock;
+    // steady_clock, high_resolution_clock DEĞİL. libstdc++'ta high_resolution_clock
+    // system_clock'un takma adıdır (is_steady == false): duvar saati NTP ile geri
+    // alınırsa iki Clock::now() farkı negatif ya da saçma çıkar. Süre ölçmenin tek
+    // doğru saati monotonik olandır.
+    using Clock = std::chrono::steady_clock;
+    static_assert(Clock::is_steady, "tempo sure olcumu icin monotonik saat gerektirir");
     using Duration = std::chrono::duration<double, std::milli>;
 
     static constexpr bool tracks_args = detail::ArgsAreStorable<ArgsType>::value;
