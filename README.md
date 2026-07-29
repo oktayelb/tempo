@@ -47,9 +47,51 @@ for a wrapper to shadow — so they keep the variadic `operator()` (which still
 accepts `ClassName&`, `ClassName*`, `reference_wrapper` and smart pointers) and
 `TEMPO_METRICS_CALL` for call-site locations.
 
-Note that only the outer call is counted: a recursive function calls itself
-through its own name inside the namespace, which is the real function, not the
-wrapper.
+## Recursion
+
+A recursive call is resolved at compile time to the function itself and never
+touches the pointer the wrapper holds, so no library can intercept it — the body
+has to name the wrapper. `TEMPO_RECURSIVE` sets that up in one line:
+
+```cpp
+TEMPO_RECURSIVE(int, fibonacci, unsigned n) {
+    return n < 2 ? n : TEMPO_SELF(fibonacci)(n-1) + TEMPO_SELF(fibonacci)(n-2);
+}
+
+fibonacci(24);   // an ordinary call site, as with TEMPO_INSTRUMENT
+```
+
+`TEMPO_SELF` is the whole switch. With `TEMPO_COUNT_RECURSION` at its default of
+`0` it names the real function, so recursion costs nothing and only the outermost
+call is counted — exactly what an untouched recursive function does. Set it to
+`1` and it names the wrapper instead, and every level is counted:
+
+| | calls | deepest | wall | tempo total |
+|---|---|---|---|---|
+| `TEMPO_COUNT_RECURSION=0` | 1 | 1 | 0.21 ms | 0.20 ms |
+| `TEMPO_COUNT_RECURSION=1` | 150049 | 24 | 3.56 ms | 3.55 ms |
+
+Off is the default because counting is not free: at roughly 82 ns per call,
+routing 150k recursive calls through the wrapper turned a 0.21 ms computation
+into 3.56 ms. Use it to answer "how many times does this really run", not to time
+a hot recursion.
+
+Timing stays correct in both modes because only the outermost call is timed.
+Timing every level would sum intervals that contain one another — for
+`fibonacci(22)` that reports about 69 ms of work for 4.7 ms of wall time. For the
+same reason `average_ms()` divides by `timed_calls`, the outermost count, not by
+every recursive step. `max_depth` records the deepest level reached, and the
+report grows a `depth` column only when something actually recursed, so an
+ordinary program prints the table it always did.
+
+Depth is tracked per thread, so threads recursing independently do not disturb
+each other, and it is restored correctly when a call throws. Only direct
+recursion is covered; mutual recursion needs both functions instrumented, though
+the timing is right either way. A return type containing a comma has to go behind
+a type alias first — the preprocessor would split it.
+
+`TEMPO_INSTRUMENT` is unaffected: it never routes recursion through the wrapper,
+so an existing recursive function keeps measuring its base call only.
 
 ## Examples
 
@@ -68,6 +110,7 @@ cd examples && make run
 | `07_lambdas.cpp` | lambdas, functors and `std::function` |
 | `08_report.cpp` | aggregated summary, quiet mode, threads |
 | `09_instrument.cpp` | instrument once, call sites unchanged |
+| `10_recursion.cpp` | counting recursive calls, and the depth gate |
 
 Lambdas and functors are objects, not pointers, so they cannot be template
 arguments. Use the factories instead of the macros:

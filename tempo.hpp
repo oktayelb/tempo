@@ -68,6 +68,51 @@
 #define TEMPO_INSTRUMENT(function, alias) inline constexpr auto alias = &function
 #endif
 
+// Should recursive calls be measured too? Off by default, and deliberately so: a
+// recursive call that goes through the wrapper pays the full per-call cost, which
+// on a hot recursion is a large multiple of the work itself. Leave it off to
+// measure the top-level call; switch it on to answer "how many times does this
+// actually run". Define it BEFORE the include.
+#ifndef TEMPO_COUNT_RECURSION
+#define TEMPO_COUNT_RECURSION 0
+#endif
+
+// The real function behind a TEMPO_RECURSIVE definition. The wrapper takes the
+// plain name, so the function itself needs a different one.
+#define TEMPO_TARGET(name) name##_tempo_target
+
+// Define a recursive function and instrument it in one go:
+//
+//     TEMPO_RECURSIVE(int, fibonacci, unsigned n) {
+//         return n < 2 ? n : TEMPO_SELF(fibonacci)(n-1) + TEMPO_SELF(fibonacci)(n-2);
+//     }
+//
+//     fibonacci(26);   // call sites are ordinary, exactly as with TEMPO_INSTRUMENT
+//
+// The macro declares the real function under a suffixed name, points a wrapper
+// at it under the plain name, and then opens the real definition -- so the body
+// you write follows the macro directly. TEMPO_SELF picks which of the two a
+// recursive call reaches, and that is the whole switch:
+//
+//   TEMPO_COUNT_RECURSION=0  -> the real function: no wrapper, no cost, and only
+//                               the outermost call is counted, exactly as if the
+//                               body had simply called itself.
+//   TEMPO_COUNT_RECURSION=1  -> the wrapper: every recursive call is counted.
+//
+// Timing stays correct either way, because Metrics times only the outermost call
+// (see the depth gate in RecordOnExit). A return type containing a comma has to
+// be hidden behind a type alias first -- the preprocessor would split it.
+#define TEMPO_RECURSIVE(returns, name, ...)                 \
+    inline returns TEMPO_TARGET(name)(__VA_ARGS__);         \
+    TEMPO_INSTRUMENT(TEMPO_TARGET(name), name);             \
+    inline returns TEMPO_TARGET(name)(__VA_ARGS__)
+
+#if TEMPO_COUNT_RECURSION
+#define TEMPO_SELF(name) name
+#else
+#define TEMPO_SELF(name) TEMPO_TARGET(name)
+#endif
+
 #define TEMPO_CALLABLE(callable) ::tempo::Callable<&callable>
 #define TEMPO_FUNCTION(function) ::tempo::Function<&function>
 #define TEMPO_METHOD(method) ::tempo::Method<&method>
@@ -189,8 +234,12 @@ struct ReportRow {
     double min_ms = 0.0;
     double max_ms = 0.0;
     bool has_samples = false;
+    unsigned int max_depth = 0;
+    unsigned int timed_calls = 0;
 
-    double average_ms() const { return calls ? total_ms / calls : 0.0; }
+    // Divided by outermost calls, not by every recursive level. See
+    // Metrics::timed_calls.
+    double average_ms() const { return timed_calls ? total_ms / timed_calls : 0.0; }
 };
 
 using RowFetcher = ReportRow (*)();
@@ -243,14 +292,23 @@ inline void report(std::ostream& out = std::cout) {
     for (const auto& row : rows) { width = std::max(width, row.name.size()); }
     width = std::min<std::size_t>(width, 60);
 
+    // The depth column appears only when something actually recursed through a
+    // wrapper. A program without recursion prints exactly the table it always
+    // printed.
+    const bool show_depth = std::ranges::any_of(
+        rows, [](const detail::ReportRow& row) { return row.max_depth > 1; });
+    const std::size_t rule = width + 56 + (show_depth ? 8 : 0);
+
     out << std::left << std::setw(static_cast<int>(width)) << "callable"
         << std::right
         << std::setw(8)  << "calls"
         << std::setw(12) << "total ms"
         << std::setw(12) << "avg ms"
         << std::setw(12) << "min ms"
-        << std::setw(12) << "max ms" << "\n";
-    out << std::string(width + 56, '-') << "\n";
+        << std::setw(12) << "max ms";
+    if (show_depth) { out << std::setw(8) << "depth"; }
+    out << "\n";
+    out << std::string(rule, '-') << "\n";
 
     for (const auto& row : rows) {
         std::string name = row.name;
@@ -261,9 +319,11 @@ inline void report(std::ostream& out = std::cout) {
             << std::setw(12) << row.total_ms
             << std::setw(12) << row.average_ms()
             << std::setw(12) << row.min_ms
-            << std::setw(12) << row.max_ms << "\n";
+            << std::setw(12) << row.max_ms;
+        if (show_depth) { out << std::setw(8) << row.max_depth; }
+        out << "\n";
     }
-    out << std::string(width + 56, '=') << "\n";
+    out << std::string(rule, '=') << "\n";
 }
 
 // Resets every registered metric.
@@ -615,12 +675,45 @@ private:
     // would advertise a guarantee that does not exist.
     inline static std::mutex stats_mutex;
     inline static bool has_samples = false;
+
+    // Outermost calls only -- the ones total/min/max actually describe. Without
+    // recursion this equals call_count. With it, call_count counts every level
+    // while only the outermost is timed, so dividing total by call_count would
+    // report an average per recursive step against a total that never included
+    // them. This is the denominator the average needs.
+    inline static unsigned int timed_calls = 0;
+
     inline static Duration total_duration{0};
     inline static Duration max_duration{0};
     inline static Duration min_duration{0};
     inline static StoredArgsType min_args{};
     inline static StoredArgsType max_args{};
     inline static SourceLocation last_call_location{};
+    inline static unsigned int max_depth = 0;
+
+    // Recursion depth, per thread: two threads recursing independently each have
+    // their own notion of "outermost". Untouched by the mutex on purpose -- it is
+    // read and written on every single call, including the deep interior of a
+    // recursion, and taking a lock there would cost more than everything we are
+    // trying to measure.
+    inline static thread_local unsigned int depth = 0;
+
+    // The deepest this thread has gone within the current outermost call. Merged
+    // into the shared max_depth once, when that outermost call returns, so the
+    // interior of a recursion never touches the lock.
+    inline static thread_local unsigned int peak_depth = 0;
+
+    // Returns true when this call is the outermost one. Called before the clock
+    // starts, so the bookkeeping is never part of a measurement.
+    static bool enter_depth() {
+        const unsigned int current = ++depth;
+        // Resetting on the way in rather than on the way out keeps this correct
+        // when a call throws: the unwinding path never reaches the merge, so a
+        // stale peak would otherwise be credited to the next call.
+        if (current == 1) { peak_depth = 1; }
+        else if (current > peak_depth) { peak_depth = current; }
+        return current == 1;
+    }
 
 public:
     // A consistent view taken in one go. Reading the total and the min separately
@@ -636,8 +729,17 @@ public:
         SourceLocation last_call_location{};
         bool has_samples = false;
 
+        // Deepest recursion reached. 1 for an ordinary function, 0 before the
+        // first call. Only ever above 1 when recursion goes through the wrapper,
+        // i.e. TEMPO_SELF with TEMPO_COUNT_RECURSION=1.
+        unsigned int max_depth = 0;
+
+        // Outermost calls. Equals calls unless recursion is being counted.
+        unsigned int timed_calls = 0;
+
+        // Time per outermost call, which is what total_duration measures.
         double average_ms() const {
-            return calls ? total_duration.count() / calls : 0.0;
+            return timed_calls ? total_duration.count() / timed_calls : 0.0;
         }
     };
 
@@ -646,13 +748,18 @@ public:
         return Snapshot{call_count.load(std::memory_order_relaxed),
                         total_duration, min_duration, max_duration,
                         min_args,       max_args,     last_call_location,
-                        has_samples};
+                        has_samples,    max_depth,    timed_calls};
     }
 
     static SourceLocation get_last_call_location() {
         const std::lock_guard<std::mutex> guard{stats_mutex};
         return last_call_location;
     }
+
+    // How deep this thread is inside the callable right now: 0 when not in it,
+    // 1 in an ordinary call, more only while recursing through the wrapper. No
+    // lock, because depth is thread_local and this thread is the only writer.
+    static unsigned int current_depth() { return depth; }
 
     // We hold the wrapper directly: in the Functor case the callable object
     // itself lives here, and must not be reconstructed on every call.
@@ -677,12 +784,17 @@ public:
         const std::lock_guard<std::mutex> guard{stats_mutex};
         call_count.store(0, std::memory_order_relaxed);
         has_samples = false;
+        timed_calls = 0;
         total_duration = Duration{0};
         max_duration = Duration{0};
         min_duration = Duration{0};
         min_args = StoredArgsType{};
         max_args = StoredArgsType{};
         last_call_location = SourceLocation{};
+        max_depth = 0;
+        // depth itself is deliberately NOT reset: it belongs to whichever call is
+        // on the stack right now, and zeroing it mid-recursion would make the
+        // next inner call look outermost and restart the clock.
     }
 
     // Registers this instantiation with the aggregated report. Thanks to the
@@ -698,7 +810,9 @@ public:
                                              state.total_duration.count(),
                                              state.min_duration.count(),
                                              state.max_duration.count(),
-                                             state.has_samples};
+                                             state.has_samples,
+                                             state.max_depth,
+                                             state.timed_calls};
                 },
                 [] { reset(); });
             return true;
@@ -744,16 +858,36 @@ private:
         SourceLocation location;
         StoredArgsType& snapshot;
         int exceptions_on_entry = std::uncaught_exceptions();
-        Clock::time_point start = Clock::now();
+
+        // Depth is taken before the clock starts, so the bookkeeping is outside
+        // every measurement. For a non-recursive function this is always true and
+        // nothing below behaves differently than it did before depth existed.
+        bool outermost = enter_depth();
+
+        // Only the outermost call reads the clock. An inner call is counted --
+        // call_count was already incremented by the wrapper -- but never timed,
+        // so a deep recursion does not pay for two clock reads per level.
+        Clock::time_point start = outermost ? Clock::now() : Clock::time_point{};
 
         ~RecordOnExit() {
             // The clock stops before anything else, and before the LOCK in
             // particular: waiting on the lock is never added to the measurement.
-            const Duration duration = Clock::now() - start;
+            const Duration duration =
+                outermost ? Duration{Clock::now() - start} : Duration{0};
+
+            // Must happen on every path, including while an exception unwinds,
+            // or the depth would stay raised and every later call would look
+            // like an inner one and never be timed again.
+            --depth;
 
             if (std::uncaught_exceptions() != exceptions_on_entry) {
                 return; // the call threw, do not record a half-finished duration
             }
+
+            // An inner call contributes its count and its depth, nothing else.
+            // Timing it would sum intervals that contain one another: with
+            // fib(22) that reports about 69 ms of "work" for 4.7 ms of wall time.
+            if (!outermost) { return; }
 
             // One critical section covering both the update and the reporting.
             // The report is inside the lock too, because otherwise the lines from
@@ -761,7 +895,13 @@ private:
             // returned, so the lock is not holding it.
             const std::lock_guard<std::mutex> guard{stats_mutex};
 
+            // This outermost call is finished, so the peak it reached is final.
+            // Merging here keeps the lock out of the recursion's interior;
+            // enter_depth() resets the peak for the next outermost call.
+            if (peak_depth > max_depth) { max_depth = peak_depth; }
+
             last_call_location = location;
+            ++timed_calls;
             total_duration += duration;
 
             const bool is_new_max = !has_samples || duration > max_duration;
