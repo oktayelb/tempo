@@ -1,9 +1,11 @@
 #pragma once
 
 // tempo — Copyright (c) 2026 Oktay Elibüyük
-// Source-available, not open source. You may use, study, modify and extend this
-// software; you may NOT distribute it without prior written permission, either
-// standalone or embedded in another product, in source or compiled form.
+// Source-available, not open source. Use it in your own software freely,
+// including commercially, and ship that software to anyone. Modify and extend it
+// as you like. What you may NOT do without prior written permission is
+// redistribute tempo itself, or your extended version of it, as a library for
+// other developers to build with -- under this name or any other.
 // See LICENSE for the full terms.
 
 #if defined(_MSC_VER)
