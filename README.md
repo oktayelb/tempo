@@ -190,6 +190,7 @@ cd examples && make run
 ```
 cd tests && make run          # the whole suite
 make matrix                   # every combination of the macros
+make diagnostics              # the errors, checked for being one line and readable
 make sanitize                 # address + undefined behaviour
 make tsan                     # data races
 ```
@@ -209,6 +210,7 @@ failure. 109 tests, 369 checks.
 | `08_threads.cpp` | exact counts under contention, torn-read detection |
 | `09_constructors.cpp` | `ConstructorProfiler`, elision, move-only arguments |
 | `10_abuse.cpp` | degenerate signatures, 16 parameters, nesting, mid-run reset |
+| `diagnostics/` | 14 mistakes that must NOT compile, each with one clear message |
 
 Lambdas and functors are objects, not pointers, so they cannot be template
 arguments. Use the factories instead of the macros:
@@ -242,11 +244,50 @@ is taken only after the clock has stopped, so it never inflates a measurement
 and never serialises the code being profiled. State inside the callable itself
 — a mutable lambda's captures, say — remains yours to synchronise.
 
+## When you use it wrong
+
+Everything tempo rejects, it rejects with a sentence, not with a template
+instantiation backtrace. Pointing `TEMPO_INSTRUMENT` at a `noexcept` function
+used to produce 71 lines of errors ending in `invalid use of incomplete type`.
+It now produces one:
+
+```
+error: static assertion failed: tempo: this function's type is not supported.
+  It is declared 'noexcept', and tempo does not wrap noexcept callables yet.
+  Wrapping one would have to drop the noexcept -- the wrapper itself is not
+  noexcept -- which silently changes the type your callers see.
+  Fix: wrap the call in a lambda and measure that instead --
+      auto m = tempo::measure([](int a){ return my_noexcept_fn(a); });
+  The function you are measuring stays exactly as it is.
+```
+
+Each message names what was wrong and what to write instead. The cases covered:
+
+| | |
+|---|---|
+| `noexcept` function or method | says so, and shows the lambda that works |
+| C-style variadic (`printf`-like) | says so, and why the `...` cannot be kept |
+| ref-qualified or volatile member | says which qualifier is the problem |
+| lambda passed to the macros | points at `tempo::measure` instead |
+| generic lambda, or overloaded `operator()` | explains that it has no signature until called |
+| `tempo::Metrics<MyLambda>` | names the wrapper type that was meant |
+| wrong arguments at a call site | reminds you the instance comes first for a method |
+| `get_maximizers()` with unstorable args | explains which parameter disabled capture |
+| `ConstructorProfiler<int>` | says it needs a class |
+
+The one-error guarantee is enforced, not hoped for: `tests/diagnostics` compiles
+each mistake and fails if it produces more than one error, or an error that does
+not carry tempo's own wording. Both compilers run it in CI, because they do not
+agree on which unsupported shapes they will silently accept — Clang deduces a
+plain signature from a `noexcept` function and drops the qualifier, GCC refuses
+outright. tempo rejects it either way, with the same message.
+
 ## Known limits
 
-Generic lambdas (`[](auto x){}`) and overloaded `operator()` are rejected — they
-have no signature until called. `noexcept` free functions and overloaded
-function names are not supported yet. Counters are static per wrapped type, so
-every `std::function<int(int)>` in a program shares one counter; wrap the
-underlying lambda instead. The summary reports totals and extremes but no
-percentiles or histograms, since samples are not retained.
+`noexcept` callables, C-style variadic functions, generic lambdas
+(`[](auto x){}`), overloaded `operator()` and overloaded function names are not
+supported — all of them diagnosed as above rather than left to the compiler.
+Counters are static per wrapped type, so every `std::function<int(int)>` in a
+program shares one counter; wrap the underlying lambda instead. The summary
+reports totals and extremes but no percentiles or histograms, since samples are
+not retained.

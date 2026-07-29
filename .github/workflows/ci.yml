@@ -41,6 +41,25 @@ jobs:
         working-directory: tests
         run: make run CXX=${{ matrix.compiler }} DEFINES="${{ matrix.defines }}"
 
+  # The compile-failure suite. Every file under tests/diagnostics is supposed to
+  # fail to build; what is verified is that it fails with tempo's own message and
+  # with exactly ONE error. Both compilers are run because they disagree about
+  # which unsupported shapes they will deduce -- that disagreement is precisely
+  # what this job exists to pin down.
+  diagnostics:
+    name: diagnostics (${{ matrix.compiler }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [g++, clang++]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check that unsupported usage fails with one readable message
+        working-directory: tests
+        run: make diagnostics CXX=${{ matrix.compiler }}
+
   # The examples are documentation, and documentation that does not compile is
   # worse than none. They are also the only place TEMPO_ENABLED=0 is exercised
   # end to end, since the tests deliberately inspect wrapper types.

@@ -160,10 +160,173 @@ struct ArgsAreStorable<std::tuple<Ts...>>
 template <typename...>
 inline constexpr bool always_false = false;
 
+// The same thing for a non-type template argument, so an assert can depend on a
+// function pointer rather than a type.
+template <auto...>
+inline constexpr bool always_false_value = false;
+
+//-------------------------------------------------------------------
+// Keeping a failed assert to ONE message.
+//
+// Every static_assert below sits in a template that the rest of the header goes
+// on to use: Callable inherits from it, Metrics reads its typedefs, the call
+// operator forwards to it. If the failing template were left empty, the assert
+// would be followed by "incomplete type", "no member named ReturnType", "no
+// member named operator()" and so on -- exactly the wall of errors these asserts
+// exist to remove.
+//
+// So each failing template inherits UnsupportedCallable instead. It provides
+// every member the downstream machinery looks for, which keeps the compiler
+// quiet after the one message we actually wrote. None of it ever runs: the
+// program does not compile.
+//
+// A parameter type that is deliberately not default-constructible, so
+// ArgsAreStorable is false for the stand-in and argument capture switches itself
+// off rather than trying to store this type.
+struct UnsupportedArg {
+    UnsupportedArg() = delete;
+};
+
+// A return type that converts both to and from anything.
+//
+// The failing wrapper still has to return SOMETHING, and whatever the user wrote
+// at the call site has to keep type-checking -- otherwise "int x = f(1);" adds
+// "cannot convert" and "return f(1);" adds "void value not ignored as it ought
+// to be", both underneath the message we actually wanted them to read.
+struct UnsupportedReturn {
+    UnsupportedReturn() = default;
+
+    // From anything. Constrained away from UnsupportedReturn itself so that it
+    // does not hide the copy constructor.
+    template <typename T>
+        requires (!std::same_as<std::decay_t<T>, UnsupportedReturn>)
+    UnsupportedReturn(T&&) {}
+
+    // To anything. Declared and never defined on purpose: it exists only to
+    // satisfy the type checker, and a translation unit that instantiates it has
+    // already failed, so it never reaches the linker.
+    template <typename T>
+    operator T() const;
+};
+
+struct UnsupportedCallable {
+    using ReturnType = UnsupportedReturn;
+    using ArgsType   = std::tuple<UnsupportedArg>;
+    using ClassType  = void;
+
+    // is_member is true so that Metrics routes to the unconstrained variadic
+    // call operator below rather than to a fixed signature. A fixed signature
+    // would reject the user's actual call arguments and add a second error on
+    // top of the one we are trying to deliver.
+    static constexpr bool is_member = true;
+    static constexpr bool is_const_member = false;
+    static constexpr bool is_functor = false;
+    static constexpr bool is_const_callable = true;
+    static constexpr std::size_t arg_count = 0;
+    static constexpr std::size_t total_arg_size = 0;
+
+    inline static std::atomic<unsigned int> call_count{0};
+
+    // Accepts anything and returns something that converts to anything, so no
+    // call site produces a follow-up error.
+    template <typename... CallArgs>
+    UnsupportedReturn operator()(CallArgs&&...) const { return {}; }
+};
+
+// Is this a C-style variadic function -- one declared with a trailing "..."
+// like printf?
+//
+// This needs detecting on purpose, because it is the one unsupported shape that
+// does NOT fail on its own. Deduction against ret(*)(args...) succeeds for
+// int(*)(int, ...) with args = {int}: the ellipsis is simply dropped, and the
+// wrapper silently becomes a one-parameter function. A silent change of
+// signature is worse than a rejection, so the specializations below assert on
+// this and say what happened.
+template <typename F>
+inline constexpr bool is_c_variadic = false;
+template <typename R, typename... A>
+inline constexpr bool is_c_variadic<R(A..., ...)> = true;
+template <typename R, typename... A>
+inline constexpr bool is_c_variadic<R(A..., ...) noexcept> = true;
+
+// Is this a noexcept function? Detected for the same reason as the ellipsis, and
+// it matters even more here because the compilers disagree. GCC will not deduce
+// ret(*)(args...) from a noexcept function pointer at all, so it lands on the
+// primary template; Clang accepts the conversion and matches the specialization
+// with the noexcept quietly dropped. Left alone, the same source is rejected by
+// one compiler and silently altered by the other. These traits let both say the
+// same thing.
+template <typename F>
+inline constexpr bool is_noexcept_function = false;
+template <typename R, typename... A>
+inline constexpr bool is_noexcept_function<R(A...) noexcept> = true;
+template <typename R, typename... A>
+inline constexpr bool is_noexcept_function<R(A..., ...) noexcept> = true;
+
+template <typename M>
+inline constexpr bool is_noexcept_member = false;
+template <typename R, typename C, typename... A>
+inline constexpr bool is_noexcept_member<R (C::*)(A...) noexcept> = true;
+template <typename R, typename C, typename... A>
+inline constexpr bool is_noexcept_member<R (C::*)(A...) const noexcept> = true;
+template <typename R, typename C, typename... A>
+inline constexpr bool is_noexcept_member<R (C::*)(A..., ...) noexcept> = true;
+template <typename R, typename C, typename... A>
+inline constexpr bool is_noexcept_member<R (C::*)(A..., ...) const noexcept> = true;
+
+#define TEMPO_NOEXCEPT_MESSAGE                                                     \
+    "  It is declared 'noexcept', and tempo does not wrap noexcept callables yet.\n"\
+    "  Wrapping one would have to drop the noexcept -- the wrapper itself is not\n" \
+    "  noexcept -- which silently changes the type your callers see.\n"             \
+    "  Fix: wrap the call in a lambda and measure that instead --\n"                \
+    "      auto m = tempo::measure([](int a){ return my_noexcept_fn(a); });\n"      \
+    "  The function you are measuring stays exactly as it is."
+
+template <typename M>
+inline constexpr bool is_c_variadic_member = false;
+template <typename R, typename C, typename... A>
+inline constexpr bool is_c_variadic_member<R (C::*)(A..., ...)> = true;
+template <typename R, typename C, typename... A>
+inline constexpr bool is_c_variadic_member<R (C::*)(A..., ...) const> = true;
+template <typename R, typename C, typename... A>
+inline constexpr bool is_c_variadic_member<R (C::*)(A..., ...) noexcept> = true;
+template <typename R, typename C, typename... A>
+inline constexpr bool is_c_variadic_member<R (C::*)(A..., ...) const noexcept> = true;
+
+#define TEMPO_C_VARIADIC_MESSAGE                                                   \
+    "  A function declared with a trailing '...' (printf-like) cannot be wrapped\n"\
+    "  faithfully: tempo would build a wrapper from the NAMED parameters only and\n"\
+    "  quietly drop the '...', so calls passing variadic arguments would stop\n"    \
+    "  compiling and the signature would no longer be the one you wrote.\n"         \
+    "  Fix: wrap the calls you want measured in a lambda --\n"                      \
+    "      auto m = tempo::measure([]{ return my_printf_like(3, 10, 20, 30); });"
+
+// The signature stand-in, for the same reason: Functor reads ReturnType,
+// ArgsType, is_const and total_arg_size off it.
+struct UnsupportedSignature {
+    using ReturnType = UnsupportedReturn;
+    using ArgsType   = std::tuple<UnsupportedArg>;
+    static constexpr bool is_const = true;
+    static constexpr std::size_t total_arg_size = 0;
+};
+
 // Decomposes the signature of a member function pointer. This is how we read the
 // signature of lambdas and functors, via &F::operator().
+//
+// The primary template is the failure case: a member function whose shape none
+// of the specializations below match. It reports that instead of being left
+// incomplete, which is what produced "invalid use of incomplete type".
 template <typename MemberPointer>
-struct MemberSignature;
+struct MemberSignature : UnsupportedSignature {
+    static_assert(always_false<MemberPointer>,
+        "tempo: this callable object's operator() has a shape tempo cannot read.\n"
+        "  tempo supports a plain operator(), optionally const and/or noexcept.\n"
+        "  It does NOT support a ref-qualified operator() (declared with a trailing\n"
+        "  '&' or '&&'), a volatile operator(), or a C-style variadic one ('...').\n"
+        "  Fix: declare the functor's operator() without the ref-qualifier, or wrap\n"
+        "  the object in a lambda with concrete parameter types and pass that to\n"
+        "  tempo::measure(...).");
+};
 
 template <typename Owner, typename ret, typename... args>
 struct MemberSignature<ret (Owner::*)(args...)> {
@@ -350,12 +513,107 @@ concept CallableObject =
     std::is_class_v<F> &&
     requires { &F::operator(); };
 
+namespace detail {
+
+// Reads a callable object's signature off its operator(). The unconstrained
+// primary is the failure case -- F has no single operator() to take the address
+// of -- and yields the stand-in, so Functor can report the problem itself rather
+// than dying on "&F::operator()" halfway through its own body.
+template <typename F>
+struct FunctorSignature {
+    using Type = UnsupportedSignature;
+};
+
+template <typename F>
+requires CallableObject<F>
+struct FunctorSignature<F> {
+    using Type = MemberSignature<decltype(&F::operator())>;
+};
+
+// What Metrics and Profiler need from whatever they are told to wrap. Used to
+// catch tempo::Metrics<MyLambda>, which should have been tempo::measure(lambda):
+// without this the class would die reading ::ReturnType off a type that has
+// none, before its own static_assert could be reached.
+template <typename W>
+concept TempoWrapper = requires {
+    typename W::ReturnType;
+    typename W::ArgsType;
+    { W::is_member } -> std::convertible_to<bool>;
+};
+
+template <typename W>
+struct WrapperOrStandIn {
+    using Type = UnsupportedCallable;
+};
+
+template <typename W>
+requires TempoWrapper<W>
+struct WrapperOrStandIn<W> {
+    using Type = W;
+};
+
+#define TEMPO_NOT_A_WRAPPER_MESSAGE                                                \
+    "  tempo::Metrics and tempo::Profiler wrap a tempo wrapper type, not a raw\n"  \
+    "  function or lambda type. Use one of these instead:\n"                       \
+    "      TEMPO_CALLABLE_METRICS(my_function)   // or TEMPO_INSTRUMENT(...)\n"     \
+    "      auto m = tempo::measure(my_lambda);   // for lambdas and functors\n"     \
+    "  Spelled out, the wrapped type is tempo::Callable<&my_function> for a\n"      \
+    "  function and tempo::Functor<decltype(my_lambda)> for a lambda."
+
+// Shared by every "you called it wrong" assert, so the explanation cannot drift
+// between the call operator, call_at and Profiler.
+#define TEMPO_BAD_CALL_ARGUMENTS_MESSAGE                                           \
+    "  Check the number, order and types of the arguments against the callable's\n"\
+    "  own signature.\n"                                                           \
+    "  For a MEMBER function the FIRST argument is the object itself, and the\n"    \
+    "  method's own arguments follow it:\n"                                        \
+    "      tempo::CallableMetrics<&Service::handle> m;\n"                          \
+    "      m(service, 42);        // object first, then the method's arguments\n"   \
+    "  The object may be passed as Service&, Service*, a std::reference_wrapper\n"  \
+    "  or a smart pointer -- but it may not be left out."
+
+// The wording is shared by Functor and by the three factories, so that a user
+// who reaches this from tempo::measure and one who reaches it from tempo::wrap
+// read the same explanation.
+#define TEMPO_NOT_A_CALLABLE_OBJECT_MESSAGE                                        \
+    "  A callable object must be a class with exactly ONE plain, non-template\n"   \
+    "  operator(). These are rejected, because they have no signature until they\n"\
+    "  are actually called:\n"                                                     \
+    "    - generic lambdas:      [](auto x){ ... }\n"                              \
+    "    - templated operator(): template <typename T> void operator()(T)\n"        \
+    "    - overloaded operator(): two or more operator() in the same class\n"      \
+    "  Fix: give the lambda concrete parameter types -- [](int x){ ... } instead\n" \
+    "  of [](auto x){ ... }. For a plain function use TEMPO_INSTRUMENT or\n"        \
+    "  TEMPO_CALLABLE_METRICS instead of a factory."
+
+} // namespace detail
+
+// The primary template is the failure case: Func is a function pointer, but not
+// one of the shapes the specialization below matches. In practice this is a
+// 'noexcept' function or a C-style variadic one. Reporting it here is what keeps
+// TEMPO_INSTRUMENT(impl::f, f) on a noexcept function to a single message.
 template<auto Func>
 requires FunctionPointer<Func>
-struct Function;
+struct Function : detail::UnsupportedCallable {
+    static_assert(detail::always_false_value<Func>,
+        "tempo: this function's type is not supported.\n"
+        "  tempo matches plain function pointers of the form  ret(*)(args...).\n"
+        "  A 'noexcept' function, or a C-style variadic one (printf-like, declared\n"
+        "  with '...'), does not match that shape and lands here.\n"
+        "  Fix: wrap the call in a lambda and measure that instead --\n"
+        "      auto m = tempo::measure([](int a){ return my_unsupported_fn(a); });\n"
+        "  The lambda has none of those qualifiers, so it matches, and the function\n"
+        "  it calls is unchanged.");
+};
 
 template <typename ret, typename... args, ret(*func_ptr)(args...)>
 struct Function<func_ptr>{
+
+    // Deduction reaches here for a variadic function too, having dropped the
+    // "..." on the way. See detail::is_c_variadic.
+    static_assert(!detail::is_c_variadic<std::remove_pointer_t<decltype(func_ptr)>>,
+        "tempo: this function's type is not supported.\n"
+        TEMPO_C_VARIADIC_MESSAGE);
 
     using  ReturnType = ret;
     using  ArgsType   = std::tuple<args...>;
@@ -379,12 +637,27 @@ struct Function<func_ptr>{
 
 };
 
+// As with Function, the primary template is the failure case: a member function
+// pointer whose shape neither specialization below matches -- a 'noexcept',
+// ref-qualified or volatile member function.
 template<auto MethodValue>
 requires MethodPointer<MethodValue>
-struct Method;
+struct Method : detail::UnsupportedCallable {
+    static_assert(detail::always_false_value<MethodValue>,
+        "tempo: this member function's type is not supported.\n"
+        "  tempo matches member function pointers of the form  ret(Class::*)(args...)\n"
+        "  and their const version. A 'noexcept' member function, a ref-qualified one\n"
+        "  (declared with a trailing '&' or '&&'), or a volatile one does not match.\n"
+        "  Fix: wrap the call in a lambda that captures the object and measure that --\n"
+        "      auto m = tempo::measure([&obj](int a){ return obj.my_method(a); });");
+};
 
 template <typename ClassName,typename ret, typename...args , ret(ClassName::*method)(args...)>
 struct Method<method>{
+
+    static_assert(!detail::is_c_variadic_member<decltype(method)>,
+        "tempo: this member function's type is not supported.\n"
+        TEMPO_C_VARIADIC_MESSAGE);
 
     using ReturnType = ret;
     using ArgsType = std::tuple<args...>;
@@ -409,6 +682,10 @@ struct Method<method>{
 template <typename ClassName,typename ret, typename...args , ret(ClassName::*method)(args...) const>
 struct Method<method>{
 
+    static_assert(!detail::is_c_variadic_member<decltype(method)>,
+        "tempo: this member function's type is not supported.\n"
+        TEMPO_C_VARIADIC_MESSAGE);
+
     using ReturnType = ret;
     using ArgsType = std::tuple<args...>;
     using ClassType = ClassName;
@@ -427,9 +704,15 @@ struct Method<method>{
     }
 };
 
+// The unconstrained primary is the failure case -- CallableValue is neither a
+// function pointer nor a member function pointer. It resolves to the stand-in so
+// that Callable below can report the problem itself, in one message, instead of
+// the constraint failing here and the user being told only "constraints not
+// satisfied".
 template<auto CallableValue>
-requires SupportedCallable<CallableValue>
-struct CallableImplementation;
+struct CallableImplementation {
+    using Type = detail::UnsupportedCallable;
+};
 
 template<auto CallableValue>
 requires FunctionPointer<CallableValue>
@@ -444,8 +727,46 @@ struct CallableImplementation<CallableValue> {
 };
 
 template<auto CallableValue>
-requires SupportedCallable<CallableValue>
 struct Callable : CallableImplementation<CallableValue>::Type {
+    // The single most common mistake: pointing the macros at a lambda or a
+    // functor. Those are objects, and an object with state can never be a
+    // template argument -- which is why the factories exist.
+    static_assert(SupportedCallable<CallableValue>,
+        "tempo: the template argument is not a function or member function pointer.\n"
+        "  TEMPO_INSTRUMENT, TEMPO_CALLABLE_METRICS and TEMPO_CALLABLE_PROFILER take\n"
+        "  the ADDRESS OF A FUNCTION:\n"
+        "      TEMPO_INSTRUMENT(impl::my_function, my_function);\n"
+        "  If you passed a lambda, a functor or a std::function, use a factory\n"
+        "  instead -- those are objects, not function pointers, and an object\n"
+        "  cannot be a template argument:\n"
+        "      auto m = tempo::measure(my_lambda);\n"
+        "      TEMPO_METRICS_CALL(m, arg1, arg2);");
+
+    // noexcept, and why it is reported from here rather than from Function or
+    // Method. The two compilers take different routes to a noexcept callable:
+    // Clang deduces the plain specialization from it, dropping the noexcept --
+    // which is then invisible to any trait inside that specialization, since the
+    // parameter's declared type no longer carries it. GCC refuses the deduction
+    // and lands on the primary template instead.
+    //
+    // Here the template argument's own type is still intact, so both can be
+    // caught. The is_base_of test is what keeps it to one message: when the
+    // primary was chosen, the wrapper derives from the stand-in and has already
+    // said its piece, so this assert stays quiet and lets that one stand.
+    static_assert(!(FunctionPointer<CallableValue> &&
+                    detail::is_noexcept_function<std::remove_pointer_t<decltype(CallableValue)>> &&
+                    !std::is_base_of_v<detail::UnsupportedCallable,
+                                       typename CallableImplementation<CallableValue>::Type>),
+        "tempo: this function's type is not supported.\n"
+        TEMPO_NOEXCEPT_MESSAGE);
+
+    static_assert(!(MethodPointer<CallableValue> &&
+                    detail::is_noexcept_member<decltype(CallableValue)> &&
+                    !std::is_base_of_v<detail::UnsupportedCallable,
+                                       typename CallableImplementation<CallableValue>::Type>),
+        "tempo: this member function's type is not supported.\n"
+        TEMPO_NOEXCEPT_MESSAGE);
+
     using CallableType = typename CallableImplementation<CallableValue>::Type;
     using CallableType::operator();
 };
@@ -454,11 +775,19 @@ struct Callable : CallableImplementation<CallableValue>::Type {
 // (an NTTP). Lambdas and functors, however, are OBJECTS: a capturing lambda can
 // never be an NTTP. That is why Functor is templated on the type and carries the
 // callable object itself inside.
+// Deliberately unconstrained, so that a wrong F produces the message below
+// rather than a bare "constraints not satisfied". The signature lookup goes
+// through detail::FunctorSignature, which tolerates an F that has no readable
+// operator() -- taking &F::operator() directly here would be a hard error before
+// the assert could ever be reached.
 template <typename F>
-requires CallableObject<F>
 struct Functor {
 
-    using SignatureType = detail::MemberSignature<decltype(&F::operator())>;
+    static_assert(CallableObject<F>,
+        "tempo: this is not a callable object tempo can read.\n"
+        TEMPO_NOT_A_CALLABLE_OBJECT_MESSAGE);
+
+    using SignatureType = typename detail::FunctorSignature<F>::Type;
     using ReturnType = typename SignatureType::ReturnType;
     using ArgsType   = typename SignatureType::ArgsType;
     using ClassType  = F;
@@ -485,10 +814,52 @@ struct Functor {
         requires std::invocable<F&, CallArgs...>
     ReturnType operator()(CallArgs&&... call_args) const {
         call_count++;
-        return std::invoke(target, std::forward<CallArgs>(call_args)...);
+        // The `if constexpr` serves only the failure case above, where ReturnType
+        // is the stand-in while the object itself returns void. On the real path
+        // ReturnType is read off this very operator(), so the two always agree
+        // and the else branch is the one taken -- it still returns the call
+        // expression directly, so the return value is never copied or moved.
+        if constexpr (std::is_void_v<std::invoke_result_t<F&, CallArgs...>> &&
+                      !std::is_void_v<ReturnType>) {
+            std::invoke(target, std::forward<CallArgs>(call_args)...);
+            return ReturnType{};
+        }
+        else {
+            return std::invoke(target, std::forward<CallArgs>(call_args)...);
+        }
     }
 };
 
+
+namespace detail {
+
+// Is W one of tempo's own wrapper templates?
+//
+// Metrics and Profiler accept this as well as TempoWrapper, because a wrapper
+// whose own static_assert has already fired may stop looking like one. Clang
+// marks a class containing a failed assert as invalid, so every later member
+// lookup on it fails too -- and Metrics would then print "this is not a tempo
+// wrapper type" underneath the message that had already explained the real
+// problem. GCC keeps the members visible and prints only the first. Checking the
+// template itself makes the two agree: if it is one of ours, the diagnosis has
+// been delivered elsewhere and there is nothing to add here.
+template <typename W>
+inline constexpr bool is_tempo_wrapper_template = false;
+
+template <auto V>
+inline constexpr bool is_tempo_wrapper_template<Callable<V>> = true;
+template <auto V>
+    requires FunctionPointer<V>
+inline constexpr bool is_tempo_wrapper_template<Function<V>> = true;
+template <auto V>
+    requires MethodPointer<V>
+inline constexpr bool is_tempo_wrapper_template<Method<V>> = true;
+template <typename F>
+inline constexpr bool is_tempo_wrapper_template<Functor<F>> = true;
+template <>
+inline constexpr bool is_tempo_wrapper_template<UnsupportedCallable> = true;
+
+} // namespace detail
 
 // TMP is cleaner since C++20.
 //
@@ -497,7 +868,14 @@ struct Functor {
 template <typename WrapperType>
 struct Profiler{
 
-    using CallableType = WrapperType;
+    static_assert(detail::TempoWrapper<WrapperType> ||
+                  detail::is_tempo_wrapper_template<WrapperType>,
+        "tempo::Profiler: this is not a tempo wrapper type.\n"
+        TEMPO_NOT_A_WRAPPER_MESSAGE);
+
+    // Falls back to the stand-in when the assert above fires, so that one
+    // message is not followed by "no type named ReturnType".
+    using CallableType = typename detail::WrapperOrStandIn<WrapperType>::Type;
     using ReturnType = typename CallableType::ReturnType;
     using ArgsType = typename CallableType::ArgsType;
 
@@ -544,6 +922,16 @@ struct Profiler{
         return call_at(SourceLocation::current(), std::forward<decltype(args)>(args)...);
     }
 
+    // As in Metrics: selected only when the call above is not viable, purely to
+    // say what was wrong with the arguments.
+    ReturnType operator()(auto&&... args) const
+        requires (!std::invocable<const CallableType&, decltype(args)...>)
+    {
+        static_assert(detail::always_false<decltype(args)...>,
+            "tempo::Profiler: this callable cannot be invoked with the arguments you passed.\n"
+            TEMPO_BAD_CALL_ARGUMENTS_MESSAGE);
+    }
+
 private:
     struct ReportOnExit {
         int exceptions_on_entry = std::uncaught_exceptions();
@@ -561,8 +949,10 @@ private:
 };
 
 // The old name is kept so TEMPO_CALLABLE_PROFILER and existing code still work.
+// Deliberately unconstrained: Callable already carries a static_assert that says
+// what a wrong template argument should have been, and a constraint here would
+// pre-empt it with "constraints not satisfied" and nothing else.
 template <auto CallableValue>
-requires SupportedCallable<CallableValue>
 using CallableProfiler = Profiler<Callable<CallableValue>>;
 //-------------------------------------------------------------------
 namespace detail {
@@ -590,6 +980,18 @@ struct VariadicCall {
     {
         return static_cast<const Derived&>(*this).call_at(
             std::source_location::current(), std::forward<decltype(args)>(args)...);
+    }
+
+    // Selected only when the overload above is not viable, and does nothing but
+    // explain why. Without it the compiler reports "no match for call to
+    // (tempo::Metrics<...>) (Foo&, int)" and leaves the reader to work out which
+    // of the arguments was wrong.
+    typename CallableType::ReturnType operator()(auto&&... args) const
+        requires (!std::invocable<const CallableType&, decltype(args)...>)
+    {
+        static_assert(always_false<decltype(args)...>,
+            "tempo: this callable cannot be invoked with the arguments you passed.\n"
+            TEMPO_BAD_CALL_ARGUMENTS_MESSAGE);
     }
 };
 
@@ -634,16 +1036,26 @@ using CallOperator = std::conditional_t<
 // microseconds of cout cost. The only thing timed here is the call itself;
 // reporting happens after the clock has stopped.
 template <typename WrapperType>
-struct Metrics : detail::CallOperator<Metrics<WrapperType>, WrapperType> {
+struct Metrics : detail::CallOperator<Metrics<WrapperType>,
+                                      typename detail::WrapperOrStandIn<WrapperType>::Type> {
 
-    using CallableType = WrapperType;
+    static_assert(detail::TempoWrapper<WrapperType> ||
+                  detail::is_tempo_wrapper_template<WrapperType>,
+        "tempo::Metrics: this is not a tempo wrapper type.\n"
+        TEMPO_NOT_A_WRAPPER_MESSAGE);
+
+    // The stand-in stands in when the assert above fires. It has to be chosen
+    // here AND in the base clause above, because the base is formed before the
+    // body is looked at -- reading ::is_member off a non-wrapper there would
+    // fail before the assert could speak.
+    using CallableType = typename detail::WrapperOrStandIn<WrapperType>::Type;
     using ReturnType = typename CallableType::ReturnType;
     using ArgsType   = typename CallableType::ArgsType;
     using SourceLocation = std::source_location;
 
     // Metrics declares no operator() of its own -- it inherits exactly one, so
     // there is never an overload to resolve between. See detail::CallOperator.
-    using CallOperatorBase = detail::CallOperator<Metrics<WrapperType>, WrapperType>;
+    using CallOperatorBase = detail::CallOperator<Metrics<WrapperType>, CallableType>;
     using CallOperatorBase::operator();
     // steady_clock, NOT high_resolution_clock. On libstdc++ high_resolution_clock
     // is an alias for system_clock (is_steady == false): if the wall clock is
@@ -836,11 +1248,42 @@ public:
         return callable(std::forward<decltype(args)>(args)...);
     }
 
+    // The TEMPO_METRICS_CALL path's version of the same explanation. A macro call
+    // lands here rather than on the call operator, so the message has to exist in
+    // both places.
+    ReturnType call_at(SourceLocation, auto&&... args) const
+        requires (!std::invocable<const CallableType&, decltype(args)...>)
+    {
+        static_assert(detail::always_false<decltype(args)...>,
+            "tempo: TEMPO_METRICS_CALL -- this callable cannot be invoked with these arguments.\n"
+            TEMPO_BAD_CALL_ARGUMENTS_MESSAGE);
+    }
+
+    // The message both accessors give when this callable's arguments are not
+    // being stored. Without it the caller gets an empty tuple and the error
+    // surfaces much later, inside <tuple>, as a page about "tuple index out of
+    // range" that never mentions tempo.
+#define TEMPO_ARGS_NOT_STORED_MESSAGE                                              \
+    "  tempo stores a call's arguments only when EVERY parameter type is both\n"   \
+    "  copy-constructible and default-constructible. At least one of this\n"        \
+    "  callable's parameters is not -- a move-only type such as\n"                  \
+    "  std::unique_ptr, a reference member, or a type with no default\n"            \
+    "  constructor.\n"                                                              \
+    "  Timing, call counts and the report are unaffected; only argument capture\n"  \
+    "  switches itself off. Query it first with:\n"                                 \
+    "      if constexpr (decltype(m)::tracks_args) { ... m.get_maximizers() ... }"
+
     StoredArgsType get_minimizers() const {
+        static_assert(tracks_args,
+            "tempo: get_minimizers() is unavailable -- this callable's arguments are not stored.\n"
+            TEMPO_ARGS_NOT_STORED_MESSAGE);
         const std::lock_guard<std::mutex> guard{stats_mutex};
         return min_args;
     }
     StoredArgsType get_maximizers() const {
+        static_assert(tracks_args,
+            "tempo: get_maximizers() is unavailable -- this callable's arguments are not stored.\n"
+            TEMPO_ARGS_NOT_STORED_MESSAGE);
         const std::lock_guard<std::mutex> guard{stats_mutex};
         return max_args;
     }
@@ -954,8 +1397,9 @@ private:
     };
 
 // The old name is kept so TEMPO_CALLABLE_METRICS and existing code still work.
+// Unconstrained for the same reason as CallableProfiler: the message lives in
+// Callable.
 template <auto CallableValue>
-requires SupportedCallable<CallableValue>
 using CallableMetrics = Metrics<Callable<CallableValue>>;
 
 //-------------------------------------------------------------------
@@ -984,14 +1428,60 @@ auto measure(F&& target) {
     // empty. Metrics is still an aggregate; it just has one more subobject now.
     return Metrics<Functor<std::decay_t<F>>>{{}, wrap(std::forward<F>(target))};
 }
+
+// The three overloads below are selected only when the ones above are not
+// viable, and exist purely to say why. Without them the compiler reports
+// "no matching function for call to measure(...)" followed by a note that a
+// constraint was not satisfied, which does not tell a user what to write
+// instead.
+//
+// Each returns a stand-in of the same shape the real factory would have
+// returned, so the code that goes on to use the result -- calling it, asking it
+// for maximizers -- keeps type-checking and adds no errors of its own.
+template <typename F>
+requires (!CallableObject<std::decay_t<F>>)
+auto wrap(F&&) {
+    static_assert(detail::always_false<F>,
+        "tempo::wrap: this argument is not a callable object tempo can read.\n"
+        TEMPO_NOT_A_CALLABLE_OBJECT_MESSAGE);
+    return detail::UnsupportedCallable{};
+}
+
+template <typename F>
+requires (!CallableObject<std::decay_t<F>>)
+auto profile(F&&) {
+    static_assert(detail::always_false<F>,
+        "tempo::profile: this argument is not a callable object tempo can read.\n"
+        TEMPO_NOT_A_CALLABLE_OBJECT_MESSAGE);
+    return Profiler<detail::UnsupportedCallable>{{}};
+}
+
+template <typename F>
+requires (!CallableObject<std::decay_t<F>>)
+auto measure(F&&) {
+    static_assert(detail::always_false<F>,
+        "tempo::measure: this argument is not a callable object tempo can read.\n"
+        TEMPO_NOT_A_CALLABLE_OBJECT_MESSAGE);
+    return Metrics<detail::UnsupportedCallable>{{}, {}};
+}
 //-------------------------------------------------------------------
 
 template <typename ClassType>
 concept IsClass = std::is_class_v<ClassType>;
 
+// Unconstrained, so that a wrong template argument produces the message below
+// rather than "constraints not satisfied".
 template <typename ClassType>
-requires IsClass<ClassType>
 struct ConstructorProfiler{
+
+    static_assert(IsClass<ClassType>,
+        "tempo::ConstructorProfiler: the template argument must be a class or struct.\n"
+        "  There is nothing to count for a fundamental type (int, double, char, a\n"
+        "  pointer, an enum): those have no constructor to instrument, and\n"
+        "  'int x = 5;' calls nothing.\n"
+        "  Fix: name the class whose constructions you want counted --\n"
+        "      tempo::ConstructorProfiler<MyClass> make;\n"
+        "      MyClass obj = make(arg1, arg2);");
 
     inline static std::atomic<unsigned int> obj_count{0};
 

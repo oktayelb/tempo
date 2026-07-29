@@ -51,6 +51,12 @@ matrix:
 	$(MAKE) --no-print-directory clean >/dev/null; \
 	exit $$failed
 
+# The compile-failure suite. Every file under diagnostics/ is meant NOT to
+# compile; what is checked is that it fails with tempo's own message and with
+# exactly one error. See diagnostics/run.sh.
+diagnostics:
+	@CXX="$(CXX)" ./diagnostics/run.sh
+
 # Undefined and address sanitizers. Slower, and worth it: the depth counter and
 # the argument snapshots are exactly the kind of state these catch.
 sanitize:
@@ -68,4 +74,4 @@ tsan:
 clean:
 	rm -rf build
 
-.PHONY: all run matrix sanitize tsan clean
+.PHONY: all run matrix diagnostics sanitize tsan clean
