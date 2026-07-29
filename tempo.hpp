@@ -872,10 +872,22 @@ private:
         Clock::time_point start = outermost ? Clock::now() : Clock::time_point{};
 
         ~RecordOnExit() {
+// GCC 15 at -O2 reports -Wdangling-pointer for the assignments of `duration`
+// into the static min/max below, but only for instantiations whose
+// StoredArgsType is an empty tuple. It is spurious: Duration is
+// chrono::duration<double, milli>, a value with no pointer in it, copied into
+// static storage. Clang 21 at the same optimization level is silent, and the
+// warning disappears at -O0, -O1 and -O3. Suppressed here, as narrowly as the
+// diagnostic allows, because a header-only library must not emit warnings into
+// its users' builds. If a future GCC stops reporting it, delete the pragmas.
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdangling-pointer"
+#endif
             // The clock stops before anything else, and before the LOCK in
             // particular: waiting on the lock is never added to the measurement.
-            const Duration duration =
-                outermost ? Duration{Clock::now() - start} : Duration{0};
+            Duration duration{0};
+            if (outermost) { duration = Clock::now() - start; }
 
             // Must happen on every path, including while an exception unwinds,
             // or the depth would stay raised and every later call would look
@@ -937,6 +949,9 @@ private:
             std::cout << "[CallableMetrics] Min time : " << min_duration.count() << " ms\n";
             std::cout << "[CallableMetrics] Max time : " << max_duration.count() << " ms\n";
             std::cout << "[CallableMetrics] Average time : " << (calls ? total_duration.count() / calls : 0.0) << " ms\n";
+#endif
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
 #endif
         }
     };
