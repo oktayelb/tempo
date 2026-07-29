@@ -1,0 +1,142 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A second push to the same branch cancels the first: nothing here needs to
+# finish for an old commit.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The main matrix. tempo's behaviour is decided at compile time by three
+  # macros, so "it builds and passes" only means something if each combination
+  # is built and run.
+  tests:
+    name: tests (${{ matrix.compiler }}, ${{ matrix.label }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [g++, clang++]
+        include:
+          - label: default
+            defines: -DTEMPO_PRINT_ENABLED=0
+          - label: recursion-counted
+            defines: -DTEMPO_PRINT_ENABLED=0 -DTEMPO_COUNT_RECURSION=1
+          - label: per-call-printing
+            defines: -DTEMPO_PRINT_ENABLED=1
+        exclude: []
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show compiler version
+        run: ${{ matrix.compiler }} --version
+
+      - name: Build and run the test suite
+        working-directory: tests
+        run: make run CXX=${{ matrix.compiler }} DEFINES="${{ matrix.defines }}"
+
+  # The examples are documentation, and documentation that does not compile is
+  # worse than none. They are also the only place TEMPO_ENABLED=0 is exercised
+  # end to end, since the tests deliberately inspect wrapper types.
+  examples:
+    name: examples (${{ matrix.compiler }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [g++, clang++]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and run the examples
+        working-directory: examples
+        run: make run CXX=${{ matrix.compiler }}
+
+      - name: Compile the examples under every macro combination
+        run: |
+          set -e
+          for defines in \
+            "-DTEMPO_ENABLED=0" \
+            "-DTEMPO_COUNT_RECURSION=1" \
+            "-DTEMPO_PRINT_ENABLED=0" \
+            "-DTEMPO_ENABLED=0 -DTEMPO_COUNT_RECURSION=1" \
+            "-DTEMPO_PRINT_ENABLED=0 -DTEMPO_COUNT_RECURSION=1" ; do
+            for file in examples/*.cpp; do
+              echo "  ${{ matrix.compiler }} $defines $file"
+              ${{ matrix.compiler }} -std=c++20 -Wall -Wextra -Werror -O2 -pthread \
+                -I. $defines "$file" -o /dev/null
+            done
+          done
+
+  # The depth counter, the argument snapshots and the shared statistics are
+  # exactly the kind of state these catch. clang is used because its sanitizer
+  # runtimes ship with the compiler.
+  sanitizers:
+    name: ${{ matrix.sanitizer }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - sanitizer: address+undefined
+            flags: -fsanitize=address,undefined -fno-omit-frame-pointer
+          - sanitizer: thread
+            flags: -fsanitize=thread
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run the suite under ${{ matrix.sanitizer }}
+        working-directory: tests
+        env:
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+          TSAN_OPTIONS: halt_on_error=1
+        run: |
+          make run CXX=clang++ \
+            CXXFLAGS="-std=c++20 -Wall -Wextra -Werror -O1 -g -pthread -I.. -I. ${{ matrix.flags }}"
+
+      - name: Run again with recursion counted
+        working-directory: tests
+        env:
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+          TSAN_OPTIONS: halt_on_error=1
+        run: |
+          make clean
+          make run CXX=clang++ DEFINES="-DTEMPO_PRINT_ENABLED=0 -DTEMPO_COUNT_RECURSION=1" \
+            CXXFLAGS="-std=c++20 -Wall -Wextra -Werror -O1 -g -pthread -I.. -I. ${{ matrix.flags }}"
+
+  # tempo claims C++20 and nothing newer. Building under C++23 catches anything
+  # that silently depends on a later rule.
+  standards:
+    name: C++${{ matrix.standard }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        standard: [20, 23]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and run
+        working-directory: tests
+        run: |
+          make run CXXFLAGS="-std=c++${{ matrix.standard }} -Wall -Wextra -Werror -O2 -pthread -I.. -I."
+
+  # A second platform, to catch anything that quietly depends on libstdc++ or on
+  # Linux. type_name() in particular parses __PRETTY_FUNCTION__, whose spelling
+  # differs between compilers and standard libraries.
+  macos:
+    name: macOS (apple clang)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and run the test suite
+        working-directory: tests
+        run: make run CXX=clang++
+      - name: Build and run the examples
+        working-directory: examples
+        run: make run CXX=clang++
