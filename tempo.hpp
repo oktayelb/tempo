@@ -33,6 +33,7 @@
 #include <algorithm>
 #include <chrono>
 #include <atomic>
+#include <cstdint>
 #include <concepts>
 #include <exception>
 #include <functional>
@@ -142,6 +143,22 @@
 
 namespace tempo{
 //-------------------------------------------------------------------
+// The type of every counter tempo keeps: calls, timed calls, constructions.
+//
+// 64 bits rather than 32 because a counter that wraps is worse than no counter
+// at all -- it reports a small number with no indication anything was lost. A
+// function called once a microsecond overflows an unsigned int in about 72
+// minutes, which is an ordinary lifetime for a server process, and the
+// instrumented functions most worth counting are exactly the hot ones. At 64
+// bits the same call rate needs half a million years.
+//
+// Named once and used everywhere so the width cannot drift between the counters
+// that hold it, the snapshots that copy it and the report that prints it.
+//
+// Recursion depth deliberately does NOT use this: it is bounded by the stack,
+// cannot approach even 32 bits, and reads better narrow.
+using CallCount = std::uint64_t;
+
 template <auto Value>
 concept FunctionPointer =
     std::is_pointer_v<decltype(Value)> &&
@@ -274,7 +291,7 @@ struct UnsupportedCallable {
     static constexpr std::size_t arg_count = 0;
     static constexpr std::size_t total_arg_size = 0;
 
-    inline static std::atomic<unsigned int> call_count{0};
+    inline static std::atomic<CallCount> call_count{0};
 
     // Accepts anything and returns something that converts to anything, so no
     // call site produces a follow-up error.
@@ -402,13 +419,13 @@ constexpr std::string_view type_name() {
 // collects them all and prints one sorted table.
 struct ReportRow {
     std::string name;
-    unsigned int calls = 0;
+    CallCount calls = 0;
     double total_ms = 0.0;
     double min_ms = 0.0;
     double max_ms = 0.0;
     bool has_samples = false;
     unsigned int max_depth = 0;
-    unsigned int timed_calls = 0;
+    CallCount timed_calls = 0;
 
     // Divided by outermost calls, not by every recursive level. See
     // Metrics::timed_calls.
@@ -635,7 +652,7 @@ struct FunctionBody {
     static constexpr bool is_noexcept = Noexcept;
     static constexpr auto arg_count = sizeof...(args);
     static constexpr auto total_arg_size = (sizeof(args) + ... + 0);
-    inline static std::atomic<unsigned int> call_count{0};
+    inline static std::atomic<CallCount> call_count{0};
 
     // The parameters are forwarding references: an argument reaches func_ptr with
     // its own value category, without a copy in between. The std::invocable
@@ -695,7 +712,7 @@ struct MethodBody {
     static constexpr bool is_noexcept = Noexcept;
     static constexpr auto arg_count = sizeof...(args);
     static constexpr auto total_arg_size = (sizeof(args) +  ... +  0);
-    inline static std::atomic<unsigned int> call_count{0};
+    inline static std::atomic<CallCount> call_count{0};
 
     // The instance is forwarded too: thanks to std::invoke, ClassName&,
     // ClassName*, std::reference_wrapper and smart pointers all work.
@@ -829,7 +846,7 @@ struct Functor {
     // The counter is tied to the type. Since every lambda EXPRESSION produces its
     // own unique closure type, this means a separate counter per lambda. Two
     // objects of the same type (two std::function<int(int)>, say) SHARE a counter.
-    inline static std::atomic<unsigned int> call_count{0};
+    inline static std::atomic<CallCount> call_count{0};
 
     // mutable: the operator() of a mutable lambda is not const, but the Profiler
     // and Metrics chain calls through a const path.
@@ -1146,7 +1163,7 @@ private:
     // while only the outermost is timed, so dividing total by call_count would
     // report an average per recursive step against a total that never included
     // them. This is the denominator the average needs.
-    inline static unsigned int timed_calls = 0;
+    inline static CallCount timed_calls = 0;
 
     inline static Duration total_duration{0};
     inline static Duration max_duration{0};
@@ -1185,7 +1202,7 @@ public:
     // would not just be a data race, it would be INCONSISTENT: one could reflect
     // the state before an update and the other the state after it.
     struct Snapshot {
-        unsigned int calls = 0;
+        CallCount calls = 0;
         Duration total_duration{0};
         Duration min_duration{0};
         Duration max_duration{0};
@@ -1200,7 +1217,7 @@ public:
         unsigned int max_depth = 0;
 
         // Outermost calls. Equals calls unless recursion is being counted.
-        unsigned int timed_calls = 0;
+        CallCount timed_calls = 0;
 
         // Time per outermost call, which is what total_duration measures.
         double average_ms() const {
@@ -1556,7 +1573,7 @@ struct ConstructorProfiler{
         "      tempo::ConstructorProfiler<MyClass> make;\n"
         "      MyClass obj = make(arg1, arg2);");
 
-    inline static std::atomic<unsigned int> obj_count{0};
+    inline static std::atomic<CallCount> obj_count{0};
 
     // A compile-time query: can ClassType be constructed from these arguments?
     // You can ask directly from your own code with
