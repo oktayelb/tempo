@@ -58,5 +58,5 @@ have no signature until called. `noexcept` free functions and overloaded
 function names are not supported yet. Counters are static per wrapped type, so
 every `std::function<int(int)>` in a program shares one counter; wrap the
 underlying lambda instead. Reports are printed per call rather than aggregated,
-and that printing happens inside the timed region — fine for millisecond
-workloads, not for measuring anything that returns in nanoseconds.
+so the output gets unwieldy past a few dozen calls. Timing statistics are not
+synchronised, so results are only meaningful from a single thread.

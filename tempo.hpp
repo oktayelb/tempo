@@ -308,10 +308,14 @@ template <auto CallableValue>
 requires SupportedCallable<CallableValue>
 using CallableProfiler = Profiler<Callable<CallableValue>>;
 //-------------------------------------------------------------------
+// Ölçüm yapan taraf Profiler'a DELEGE ETMEZ. Profiler her çağrıda beş satır
+// yazıyor; Metrics onun üzerinden çağırsaydı bu I/O ölçüm penceresinin içinde
+// kalırdı ve tek bir çağrının "süresi" birkaç mikrosaniyelik cout maliyetiyle
+// başlardı. Burada zamanlanan tek şey çağrının kendisi; raporlama saat
+// durdurulduktan sonra yapılıyor.
 template <typename WrapperType>
 struct Metrics {
 
-    using ProfilerType = Profiler<WrapperType>;
     using CallableType = WrapperType;
     using ReturnType = typename CallableType::ReturnType;
     using ArgsType   = typename CallableType::ArgsType;
@@ -337,9 +341,9 @@ struct Metrics {
 
     static SourceLocation get_last_call_location() { return last_call_location; }
 
-    // Profiler'ı üye olarak tutuyoruz: Functor durumunda çağrılabilir nesnenin
+    // Wrapper'ı doğrudan tutuyoruz: Functor durumunda çağrılabilir nesnenin
     // kendisi burada yaşıyor, her çağrıda yeniden kurulamaz.
-    ProfilerType profiler;
+    CallableType callable;
 
     // Dikkat: burada bilerek forward ETMİYORUZ. Argümanlar asıl çağrıya forward
     // edileceği için oradan taşınmış (moved-from) olabilirler; snapshot'ı çağrı
@@ -376,10 +380,12 @@ struct Metrics {
         // saklamaya yol açardı.
         StoredArgsType snapshot = make_args_snapshot(args...);
 
-        // Ölçüm ve raporlama yıkıcıda: dönüş değeri isimli bir yerele
-        // uğramadığı için hiç kopyalanmıyor, taşınamayan tipler bile geçiyor.
+        // Saat, guard kurulurken başlıyor ve yıkıcının İLK satırında duruyor;
+        // arada yalnızca çağrının kendisi var. Raporlama saat durduktan sonra.
+        // Dönüş değeri isimli bir yerele uğramadığı için hiç kopyalanmıyor,
+        // taşınamayan tipler bile geçiyor.
         [[maybe_unused]] const RecordOnExit record{location, snapshot};
-        return profiler.call_at(location, std::forward<decltype(args)>(args)...);
+        return callable(std::forward<decltype(args)>(args)...);
     }
 
     ReturnType operator()(auto&&... args) const
@@ -404,11 +410,13 @@ private:
         Clock::time_point start = Clock::now();
 
         ~RecordOnExit() {
+            // Saati her şeyden önce durduruyoruz: buradan sonrası ölçüme dahil değil.
+            const Duration duration = Clock::now() - start;
+
             if (std::uncaught_exceptions() != exceptions_on_entry) {
                 return; // çağrı fırlattı, yarım kalan süreyi metriklere yazma
             }
 
-            const Duration duration = Clock::now() - start;
             total_duration += duration;
 
             const bool is_new_max = duration > max_duration;
@@ -428,9 +436,12 @@ private:
                 else if (is_new_min) { min_args = std::move(snapshot); }
             }
 
+            // Buradan aşağısı saat durduktan sonra çalışıyor, ölçümü kirletmiyor.
             std::cout << "[CallableMetrics] Callable ran. Took: " << duration.count() << " ms\n";
             std::cout << "[CallableMetrics] Call location: " << location.file_name() << ":" << location.line() << "\n";
             std::cout << "[CallableMetrics] Caller function: " << location.function_name() << "\n";
+            std::cout << "[CallableMetrics] Call count: " << CallableType::call_count << "\n";
+            std::cout << "[CallableMetrics] Total size of args: " << CallableType::total_arg_size << " bytes\n";
             std::cout << "[CallableMetrics] Total time spent : " << total_duration.count() << " ms\n";
             std::cout << "[CallableMetrics] Min time : " << min_duration.count() << " ms\n";
             std::cout << "[CallableMetrics] Max time : " << max_duration.count() << " ms\n";
@@ -466,7 +477,7 @@ auto profile(F&& target) {
 template <typename F>
 requires CallableObject<std::decay_t<F>>
 auto measure(F&& target) {
-    return Metrics<Functor<std::decay_t<F>>>{profile(std::forward<F>(target))};
+    return Metrics<Functor<std::decay_t<F>>>{wrap(std::forward<F>(target))};
 }
 //-------------------------------------------------------------------
 

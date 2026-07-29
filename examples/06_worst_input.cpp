@@ -53,8 +53,8 @@ int main() {
     //    into itself directly, so what you measured is whole-call latency, not
     //    per-recursion cost. That is usually what you want.
     //
-    // 2. tempo prints its report inside the timed region, so every measurement
-    //    carries a few microseconds of I/O overhead. It disappears against the
-    //    milliseconds here; it would not against a function that returns in
-    //    nanoseconds.
+    // 2. The timed region contains nothing but the call itself -- the report
+    //    you see above is printed after the clock has already stopped. What is
+    //    left is the cost of the two Clock::now() reads, around 15-25 ns, which
+    //    is the floor for any chrono-based timer.
 }
