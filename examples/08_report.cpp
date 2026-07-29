@@ -1,18 +1,13 @@
 // 08 — Aggregated reporting, quiet mode, and threads
 //
-// Printing a block per call is unreadable past a few dozen calls. Define
-// TEMPO_PRINT_ENABLED as 0 before including tempo.hpp and every per-call cout
-// disappears from the build -- statistics are still collected, and you get one
-// sorted summary from tempo::report() whenever you want it.
+// Printing a block per call is unreadable past a few dozen calls, which is why
+// TEMPO_PRINT_ENABLED defaults to 0 and no per-call cout is in the build at all.
+// Statistics are collected regardless, and you get one sorted summary from
+// tempo::report() whenever you want it.
 //
 // Every Metrics instantiation registers itself on its first call, so the report
 // covers everything that ran without you listing anything by hand.
 
-// Guarded, so a build that sets this on the command line -- as the CMake target
-// does for every translation unit at once -- is not fighting the source file.
-#ifndef TEMPO_PRINT_ENABLED
-#define TEMPO_PRINT_ENABLED 0
-#endif
 #include "tempo.hpp"
 
 #include <cassert>

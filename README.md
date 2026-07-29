@@ -58,6 +58,22 @@ newer.
 `-pthread` is required wherever your standard library needs it for `<mutex>` and
 `<thread>`; on glibc 2.34 and later it links without, but pass it anyway.
 
+### Version
+
+The header defines its own version, so code that vendors a copy can pin the
+revision it was written against:
+
+```cpp
+#if !defined(TEMPO_VERSION) || TEMPO_VERSION < 10000
+#error "this code needs tempo 1.0.0 or newer"
+#endif
+```
+
+`TEMPO_VERSION` is `major * 10000 + minor * 100 + patch`, which orders correctly
+across all three fields; `TEMPO_VERSION_MAJOR`, `_MINOR`, `_PATCH` and
+`TEMPO_VERSION_STRING` are there too. The major number stays at `0` while the
+API is still free to change.
+
 ### Flags that change behaviour
 
 | Flag | Effect |
@@ -230,9 +246,9 @@ std::get<1>(m.get_maximizers());   // 302
 
 ## Reporting
 
-Per-call output is on by default. Define `TEMPO_PRINT_ENABLED` as `0` before
-including the header and every `cout` call leaves the build; statistics are
-still collected, and one sorted summary comes from `tempo::report()`:
+tempo is quiet by default. Statistics are collected on every call and read back
+through the accessors, or all at once as one sorted summary from
+`tempo::report()`:
 
 ```
 callable                         calls    total ms      avg ms      min ms      max ms
@@ -245,6 +261,11 @@ Every metric registers itself on its first call. `tempo::report_at_exit()`
 prints the table when the program ends, and `tempo::reset_all()` clears
 everything. Read statistics with `snapshot()`, which returns them all under one
 lock so the numbers describe the same moment.
+
+Define `TEMPO_PRINT_ENABLED` as `1` before including the header to get a block
+of lines on every call instead — the clearer view when you are watching a
+handful of calls, and unusable on anything called often. It is off by default
+because the printing happens under the same lock as the recording.
 
 Statistics are mutex-guarded and safe to gather from several threads. The lock
 is taken only after the clock has stopped, so it never inflates a measurement

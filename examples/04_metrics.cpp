@@ -5,9 +5,10 @@
 // of the fastest and the slowest call, so a latency outlier comes with the
 // input that caused it.
 //
-// Each call prints a report block, which is why the examples here use only a
-// handful of calls. Aggregating instead of printing per call is the main thing
-// this library still needs.
+// Nothing is printed per call: TEMPO_PRINT_ENABLED defaults to 0, so the
+// statistics are collected quietly and read back through the accessors below,
+// or all at once through tempo::report(). Build this with
+// -DTEMPO_PRINT_ENABLED=1 to watch each call narrate itself instead.
 
 #include "tempo.hpp"
 

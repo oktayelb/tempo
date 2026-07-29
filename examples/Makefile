@@ -1,9 +1,9 @@
 CXX      ?= g++
 CXXFLAGS ?= -std=c++20 -Wall -Wextra -Werror -O2 -pthread -I..
 
-# The examples take their macros from the command line like everything else.
-# 08_report.cpp and 10_recursion.cpp set TEMPO_PRINT_ENABLED themselves, behind
-# an #ifndef, so a value passed here wins over their default.
+# The examples take their macros from the command line like everything else, and
+# rely on the header's own defaults otherwise -- TEMPO_PRINT_ENABLED among them,
+# which is 0 unless this passes something else.
 DEFINES  ?=
 
 SRCS := $(wildcard *.cpp)

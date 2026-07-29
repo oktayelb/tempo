@@ -3,6 +3,23 @@
 // tempo — Copyright (c) 2026 Oktay Elibüyük
 // Released under the MIT License. See LICENSE for the full terms.
 
+// tempo's version, as three numbers and as one comparable integer. The single
+// integer is the one to test against, since it orders correctly across all
+// three fields:
+//
+//     #if !defined(TEMPO_VERSION) || TEMPO_VERSION < 10000
+//     #error "this code needs tempo 1.0.0 or newer"
+//     #endif
+//
+// Major stays at 0 while the API is still free to change; a program that
+// vendors the header can pin the exact revision it was written against.
+#define TEMPO_VERSION_MAJOR 0
+#define TEMPO_VERSION_MINOR 1
+#define TEMPO_VERSION_PATCH 0
+#define TEMPO_VERSION \
+    (TEMPO_VERSION_MAJOR * 10000 + TEMPO_VERSION_MINOR * 100 + TEMPO_VERSION_PATCH)
+#define TEMPO_VERSION_STRING "0.1.0"
+
 #if defined(_MSC_VER)
 #if !defined(_MSVC_LANG) || _MSVC_LANG < 202002L
 #error "tempo requires C++20 support"
@@ -29,11 +46,16 @@
 #include <utility>
 #include <vector>
 
-// Print a line-by-line report on every call? Set this to 0 and every cout call
-// leaves the build; statistics are still collected, and you get a single summary
-// from tempo::report(). Define it BEFORE the include.
+// Print a block of lines on every single call? Off by default: a profiler that
+// writes eight lines to cout per call -- while holding the lock, at that -- is
+// unusable on anything called often, and the aggregated tempo::report() says the
+// same things better. Statistics are collected either way; this switch only
+// decides whether each call narrates itself.
+//
+// Set it to 1 to get the per-call trace back, which is genuinely the clearer
+// view when you are watching a handful of calls. Define it BEFORE the include.
 #ifndef TEMPO_PRINT_ENABLED
-#define TEMPO_PRINT_ENABLED 1
+#define TEMPO_PRINT_ENABLED 0
 #endif
 
 // Master switch for TEMPO_INSTRUMENT. Define it as 0 in release builds and every

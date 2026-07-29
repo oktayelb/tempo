@@ -55,8 +55,10 @@ int main() {
     //    into itself directly, so what you measured is whole-call latency, not
     //    per-recursion cost. That is usually what you want.
     //
-    // 2. The timed region contains nothing but the call itself -- the report
-    //    you see above is printed after the clock has already stopped. What is
-    //    left is the cost of the two Clock::now() reads, around 15-25 ns, which
-    //    is the floor for any chrono-based timer.
+    // 2. The timed region contains nothing but the call itself. Recording and
+    //    reporting both happen after the clock has stopped, so with
+    //    -DTEMPO_PRINT_ENABLED=1 the per-call block costs the measurement
+    //    nothing. What is left is the two Clock::now() reads, around 15-25 ns
+    //    each, which is the floor for any chrono-based timer -- the same price
+    //    you would pay wrapping the call in a steady_clock by hand.
 }
