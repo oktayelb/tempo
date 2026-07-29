@@ -1,0 +1,108 @@
+tempo — Source-Available License (Non-Distribution)
+
+Copyright (c) 2026 Oktay Elibüyük
+All rights reserved.
+
+This is NOT an open-source license as defined by the Open Source Initiative.
+Permission to distribute is withheld and must be requested. See Section 3.
+
+
+1. DEFINITIONS
+
+   "Software" means the tempo library, including tempo.hpp, the examples, the
+   documentation, and any other file in this repository.
+
+   "You" means the individual or legal entity exercising the permissions granted
+   by this License.
+
+   "Derivative Work" means any work that is based on the Software, including
+   modifications, extensions, additional features, translations, ports to other
+   languages, and any work that incorporates the Software in whole or in part.
+
+   "Distribute" means to make available to any third party, by any means and in
+   any form — source or compiled, standalone or embedded in a larger work,
+   whether or not for a fee. This includes publishing the Software or a
+   Derivative Work in a public repository, shipping it in a product, bundling it
+   with a service delivered to others, or otherwise conveying a copy outside
+   your organization.
+
+
+2. WHAT YOU MAY DO, FREE OF CHARGE
+
+   The copyright holder grants You a worldwide, royalty-free, non-exclusive,
+   non-transferable license to:
+
+   (a) use and run the Software for any purpose, including commercial purposes,
+       within your own organization;
+
+   (b) copy the Software and store it on your own systems;
+
+   (c) study the Software and its source code without restriction;
+
+   (d) modify the Software and create Derivative Works, including adding new
+       features, fixing defects, and adapting it to your needs;
+
+   (e) share the Software and your Derivative Works internally, among people
+       within your own organization, in support of the uses above.
+
+
+3. WHAT REQUIRES PERMISSION
+
+   You may NOT Distribute the Software or any Derivative Work without the prior
+   written permission of the copyright holder.
+
+   This restriction applies regardless of whether the Software is distributed on
+   its own or as a component of a larger work, and regardless of whether it is
+   distributed in source form or compiled into a binary.
+
+   Permission is granted or refused at the sole discretion of the copyright
+   holder, and may be granted on terms agreed in writing at that time.
+
+   To request permission, contact: oktayelb@gmail.com
+
+   Nothing in this Section prevents You from making a request, and requests are
+   welcome.
+
+
+4. CONDITIONS
+
+   (a) This License and the copyright notice above must be retained in all
+       copies of the Software and of any Derivative Work, including internal
+       copies.
+
+   (b) If You modify the Software, You must mark the modified files as changed,
+       so that they are not mistaken for the original.
+
+   (c) If permission to Distribute is granted under Section 3, the terms of that
+       written permission govern the distribution, and this License continues to
+       govern everything else.
+
+
+5. RESERVATION OF RIGHTS
+
+   All rights not expressly granted in Section 2 are reserved by the copyright
+   holder. No rights are granted under any patent or trademark, and no right to
+   use the name "tempo" or the name of the copyright holder to endorse or
+   promote any product is granted.
+
+
+6. NO WARRANTY
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE, AND NONINFRINGEMENT.
+
+
+7. LIMITATION OF LIABILITY
+
+   IN NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES, OR
+   OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE,
+   ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+   DEALINGS IN THE SOFTWARE.
+
+
+8. TERMINATION
+
+   This License terminates automatically if You breach any of its terms. Upon
+   termination, You must cease all use of the Software and destroy all copies in
+   your possession. Sections 5, 6, and 7 survive termination.
