@@ -76,6 +76,11 @@ struct ArgsAreStorable<std::tuple<Ts...>>
     : std::bool_constant<(std::copy_constructible<std::decay_t<Ts>> && ...) &&
                          (std::default_initializable<std::decay_t<Ts>> && ...)> {};
 
+// Şablona bağlı "false": static_assert yalnızca şablon gerçekten örneklendiğinde
+// patlasın diye. Düz "false" yazsaydık derleyici daha okumadan hata verirdi.
+template <typename...>
+inline constexpr bool always_false = false;
+
 // Bir üye fonksiyon işaretçisinin imzasını parçalıyoruz. Lambda ve functor'ların
 // imzasını &F::operator() üzerinden buradan okuyoruz.
 template <typename MemberPointer>
@@ -723,15 +728,43 @@ struct ConstructorProfiler{
 
     inline static std::atomic<unsigned int> obj_count{0};
 
+    // Derleme zamanı sorgu: ClassType bu argümanlardan kurulabiliyor mu?
+    // Kendi kodunuzda static_assert(Profiler::can_construct<int, int>) diye
+    // doğrudan sorabilirsiniz.
+    template <typename... Args>
+    static constexpr bool can_construct = std::constructible_from<ClassType, Args...>;
+
     // Argümanlar yapıcıya forward ediliyor: taşınabilir argümanlar taşınıyor,
     // prvalue döndürüldüğü için nesne doğrudan çağıranın yerinde kuruluyor
     // (garantili copy elision) -- kopyalanamayan/taşınamayan tipler de çalışıyor.
+    //
+    // Sayaç NE ZAMAN artıyor? Nesne kurulduktan SONRA. "return ClassType(...)"
+    // önce çağıranın dönüş nesnesini ilklendirir, YEREL değişkenler ancak ondan
+    // sonra yıkılır -- yani counter'ın yıkıcısı yapıcı başarıyla bittikten sonra
+    // çalışır. Yapıcı fırlatırsa yığın çözülürken uncaught_exceptions() girişteki
+    // değerden farklı olur ve sayaç hiç artmaz.
+    //
+    // Nesneyi isimli bir yerele alıp "obj_count++; return obj;" demek daha açık
+    // görünürdü ama dönüşü kopya/taşımaya mecbur bırakır ve aşağıdaki gibi
+    // kopyalanamaz-taşınamaz tipleri derlenemez hâle getirirdi.
     template <typename... Args>
         requires std::constructible_from<ClassType, Args...>
     ClassType operator() (Args&&... args) const {
         [[maybe_unused]] const CountOnSuccess counter{};
         return ClassType(std::forward<Args>(args)...);
         };
+
+    // Yalnızca yukarıdaki uygun DEĞİLKEN seçilir. Tek işi, "no match for call"
+    // yerine ne olduğunu söyleyen bir hata mesajı vermek.
+    // Dönüş tipi bilerek ClassType: "auto p = make(...)" yazan kod ayrıca
+    // "deduced type void is incomplete" hatası almasın, tek ve net mesaj kalsın.
+    template <typename... Args>
+        requires (!std::constructible_from<ClassType, Args...>)
+    ClassType operator() (Args&&...) const {
+        static_assert(detail::always_false<Args...>,
+            "tempo::ConstructorProfiler: ClassType bu argumanlarla kurulamiyor. "
+            "Eslesen bir yapici yok -- argumanlarin sayisini ve turlerini kontrol edin.");
+    }
 
 private:
     struct CountOnSuccess {

@@ -40,6 +40,26 @@ struct Fragile {
 };
 
 int main() {
+    // --- asking, at compile time, whether a constructor matches ---------------
+    using PayloadProfiler = tempo::ConstructorProfiler<Payload>;
+    using PinnedProfiler = tempo::ConstructorProfiler<Pinned>;
+
+    static_assert(PayloadProfiler::can_construct<std::string>);
+    static_assert(PayloadProfiler::can_construct<const char*>);
+    static_assert(!PayloadProfiler::can_construct<int, int>);
+    static_assert(PinnedProfiler::can_construct<int, int>);
+    static_assert(!PinnedProfiler::can_construct<int>);
+    static_assert(!PinnedProfiler::can_construct<>);
+
+    // Calling with arguments no constructor accepts is a compile error with a
+    // named cause, not a wall of overload-resolution noise:
+    //   make_payload(1, 2);
+    // -> static assertion failed: tempo::ConstructorProfiler: ClassType bu
+    //    argumanlarla kurulamiyor...
+
+    std::cout << "can_construct<std::string> : " << PayloadProfiler::can_construct<std::string> << "\n";
+    std::cout << "can_construct<int, int>    : " << PayloadProfiler::can_construct<int, int> << "\n";
+
     // --- construction is counted ---------------------------------------------
     tempo::ConstructorProfiler<Payload> make_payload;
 
