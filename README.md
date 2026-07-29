@@ -24,6 +24,73 @@ std::get<0>(fibonacci.get_maximizers());   // 32 — the input that was slowest
 
 Header-only. Requires C++20 (concepts, `std::source_location`, `inline static`).
 
+## Building
+
+Drop `tempo.hpp` on your include path. There is nothing to link.
+
+```sh
+# GCC
+g++   -std=c++20 -O2 -pthread -I/path/to/tempo your.cpp -o your_program
+
+# Clang
+clang++ -std=c++20 -O2 -pthread -I/path/to/tempo your.cpp -o your_program
+
+# Apple Clang (macOS)
+clang++ -std=c++20 -O2 -I/path/to/tempo your.cpp -o your_program
+
+# MSVC
+cl /std:c++20 /Zc:preprocessor /EHsc /O2 /I path\to\tempo your.cpp
+```
+
+`/Zc:preprocessor` is **required** on MSVC, not optional: `TEMPO_METRICS_CALL`
+and `TEMPO_PROFILE_CALL` use `__VA_OPT__`, which the traditional MSVC
+preprocessor does not implement. `std::source_location` needs VS 2019 16.10 or
+newer.
+
+`-pthread` is required wherever your standard library needs it for `<mutex>` and
+`<thread>`; on glibc 2.34 and later it links without, but pass it anyway.
+
+### Flags that change behaviour
+
+| Flag | Effect |
+|---|---|
+| `-O0` vs `-O2` | Per-call overhead roughly doubles unoptimized: **169 ns** at `-O0` against **83 ns** at `-O2`. Every overhead number quoted in this README is `-O2`. Measure at the level you ship. |
+| `-fno-exceptions` | Compiles and works. The guards that skip recording for a throwing call become dead code, since nothing can throw. |
+| `-fno-rtti` | No effect. tempo reads `__PRETTY_FUNCTION__`, never `typeid`. |
+| `-flto` | No effect on correctness. |
+| `-std=c++23` | Builds and passes the suite. C++20 is the floor, not a ceiling. |
+
+### The three macros are ODR-sensitive
+
+`TEMPO_ENABLED`, `TEMPO_PRINT_ENABLED` and `TEMPO_COUNT_RECURSION` change the
+bodies of inline functions and templates, and `TEMPO_ENABLED` changes the *type*
+an instrumented name has. Defining them differently in two translation units of
+the same program is an ODR violation, and the linker will not warn you.
+
+Set them on the compiler command line so every translation unit agrees:
+
+```sh
+g++ -std=c++20 -O2 -pthread -DTEMPO_PRINT_ENABLED=0 -DTEMPO_COUNT_RECURSION=1 ...
+```
+
+If you define them in source instead, they must come before `#include
+"tempo.hpp"` in every file, with the same values.
+
+### Compiler-dependent output
+
+`tempo::report()` names each row by scraping `__PRETTY_FUNCTION__`, whose
+spelling is not standardised. A function in an anonymous namespace prints as
+`{anonymous}::f` under GCC and `&(anonymous namespace)::f` under Clang, and the
+name column is capped at 60 characters, so the longer Clang spelling may be
+truncated. Do not parse the report; read `snapshot()` instead.
+
+### What CI covers
+
+GCC and Clang on Linux and Apple Clang on macOS, under every combination of the
+three macros, at C++20 and C++23, plus AddressSanitizer, UndefinedBehaviorSanitizer
+and ThreadSanitizer. **MSVC is not covered** — the code paths for it exist and are
+written against the documented behaviour, but nothing verifies them.
+
 ## Instrumenting without touching call sites
 
 `TEMPO_INSTRUMENT` names a function once, at its declaration, and leaves every
@@ -111,6 +178,31 @@ cd examples && make run
 | `08_report.cpp` | aggregated summary, quiet mode, threads |
 | `09_instrument.cpp` | instrument once, call sites unchanged |
 | `10_recursion.cpp` | counting recursive calls, and the depth gate |
+
+## Tests
+
+```
+cd tests && make run          # the whole suite
+make matrix                   # every combination of the macros
+make sanitize                 # address + undefined behaviour
+make tsan                     # data races
+```
+
+Each file is a separate binary, like the examples, and exits non-zero on
+failure. 109 tests, 369 checks.
+
+| | |
+|---|---|
+| `01_traits.cpp` | signature introspection, almost entirely `static_assert` |
+| `02_counting.cpp` | counters, the per-type sharing rule, reset |
+| `03_forwarding.cpp` | copies and moves counted exactly, immovable returns |
+| `04_metrics.cpp` | timing invariants, extremes, snapshot coherence |
+| `05_location.cpp` | call-site capture, checked against `__LINE__` |
+| `06_recursion.cpp` | the depth gate, both counting modes, throwing recursion |
+| `07_exceptions.cpp` | throwing calls, nested unwinding, failed construction |
+| `08_threads.cpp` | exact counts under contention, torn-read detection |
+| `09_constructors.cpp` | `ConstructorProfiler`, elision, move-only arguments |
+| `10_abuse.cpp` | degenerate signatures, 16 parameters, nesting, mid-run reset |
 
 Lambdas and functors are objects, not pointers, so they cannot be template
 arguments. Use the factories instead of the macros:
