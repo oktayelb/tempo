@@ -96,7 +96,7 @@ TEST(a_single_call_is_its_own_minimum_and_maximum) {
     CHECK_NEAR(stats.average_ms(), stats.total_duration.count(), 1e-9);
 }
 
-TEST(get_minimizers_and_maximizers_agree_with_the_snapshot) {
+TEST(fastest_and_slowest_args_agree_with_the_snapshot) {
     using Metrics = TEMPO_CALLABLE_METRICS(sleep_ms);
     Metrics::reset();
     Metrics metrics;
@@ -105,10 +105,10 @@ TEST(get_minimizers_and_maximizers_agree_with_the_snapshot) {
     metrics(1, 202);
 
     const auto stats = Metrics::snapshot();
-    CHECK_EQ(std::get<1>(metrics.get_minimizers()), std::get<1>(stats.min_args));
-    CHECK_EQ(std::get<1>(metrics.get_maximizers()), std::get<1>(stats.max_args));
-    CHECK_EQ(std::get<1>(metrics.get_minimizers()), 202);
-    CHECK_EQ(std::get<1>(metrics.get_maximizers()), 201);
+    CHECK_EQ(std::get<1>(metrics.fastest_args()), std::get<1>(stats.min_args));
+    CHECK_EQ(std::get<1>(metrics.slowest_args()), std::get<1>(stats.max_args));
+    CHECK_EQ(std::get<1>(metrics.fastest_args()), 202);
+    CHECK_EQ(std::get<1>(metrics.slowest_args()), 201);
 }
 
 TEST(non_trivial_argument_types_are_stored_by_value) {

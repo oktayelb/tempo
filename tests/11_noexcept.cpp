@@ -173,8 +173,8 @@ TEST(argument_capture_works_when_every_parameter_copies_without_throwing) {
 
     // Every call is the same work, so which one came out slowest is not
     // predictable -- but it has to be one of the three that actually ran.
-    const int worst = std::get<0>(scale.get_maximizers());
-    const int best = std::get<0>(scale.get_minimizers());
+    const int worst = std::get<0>(scale.slowest_args());
+    const int best = std::get<0>(scale.fastest_args());
     CHECK(worst >= 1 && worst <= 3);
     CHECK(best >= 1 && best <= 3);
 }
@@ -226,7 +226,7 @@ TEST(the_same_parameter_still_captures_on_a_throwing_callable) {
     static_assert(decltype(relaxed)::tracks_args);
 
     CHECK_EQ(TEMPO_METRICS_CALL(relaxed, std::string{"hello"}), 5u);
-    CHECK_EQ(std::get<0>(relaxed.get_maximizers()), std::string{"hello"});
+    CHECK_EQ(std::get<0>(relaxed.slowest_args()), std::string{"hello"});
 }
 
 TEST(a_move_only_parameter_is_still_off_for_the_reason_it_always_was) {

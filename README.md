@@ -18,7 +18,7 @@ TEMPO_INSTRUMENT(impl::fibonacci, fibonacci);
 fibonacci(26);
 fibonacci(32);
 
-std::get<0>(fibonacci.get_maximizers());   // 32 — the input that was slowest
+auto [slowest_n] = fibonacci.slowest_args();   // 32 — the input that was slowest
 ```
 
 Point tempo at a function or method pointer and you also get a type that knows
@@ -127,7 +127,7 @@ they can across scopes, so the function lives in a nested namespace and the
 wrapper takes its name outside; `fibonacci(26)` then resolves to the wrapper.
 
 The call site is still recorded. For free functions and callable objects,
-`operator()` is declared with the callable's exact parameter list plus a
+`Metrics::operator()` is declared with the callable's exact parameter list plus a
 trailing `std::source_location` that defaults to `current()` — and because that
 parameter pack comes from the class template rather than being deduced from the
 call, the default argument is evaluated at the caller. A deduced pack cannot do
@@ -141,6 +141,33 @@ Member functions cannot use the seam — `service.handle(...)` offers no free na
 for a wrapper to shadow — so they keep the variadic `operator()` (which still
 accepts `ClassName&`, `ClassName*`, `reference_wrapper` and smart pointers) and
 `TEMPO_METRICS_CALL` for call-site locations.
+
+### When you need the call macros
+
+Less often than it looks. A plain call captures the caller wherever the wrapper
+can be given a fixed signature, which is everything `tempo::measure` wraps except
+member functions:
+
+```cpp
+auto m = tempo::measure([](int rounds, int id) { /* ... */ return id; });
+m(12, 302);                    // call site captured, no macro
+
+TEMPO_CALLABLE_METRICS(fibonacci) fib;
+fib(32);                       // likewise for a free function
+```
+
+| | plain call | needs the macro |
+|---|---|---|
+| `Metrics` over a free function | captures the caller | — |
+| `Metrics` over a lambda or functor | captures the caller | — |
+| `Metrics` over a member function | counted and timed, location is `tempo.hpp` | `TEMPO_METRICS_CALL` |
+| `Profiler` (any callable) | location is `tempo.hpp` | `TEMPO_PROFILE_CALL` |
+
+`Profiler` is the exception across the board: its `operator()` is variadic for
+every callable kind and calls `source_location::current()` in its own body, so
+the location it records is the header's, not yours. Counting is unaffected —
+only the reported call site is. Use `TEMPO_PROFILE_CALL` whenever the location
+matters, or `tempo::measure` instead, which does not need it.
 
 ## Recursion
 
@@ -250,8 +277,8 @@ arguments. Use the factories instead of the macros:
 
 ```cpp
 auto m = tempo::measure([](int rounds, int id) { /* ... */ return id; });
-TEMPO_METRICS_CALL(m, 12, 302);
-std::get<1>(m.get_maximizers());   // 302
+m(12, 302);
+auto [slowest_rounds, slowest_id] = m.slowest_args();   // 12, 302
 ```
 
 ## Reporting
@@ -311,7 +338,7 @@ Each message names what was wrong and what to write instead. The cases covered:
 | generic lambda, or overloaded `operator()` | explains that it has no signature until called |
 | `tempo::Metrics<MyLambda>` | names the wrapper type that was meant |
 | wrong arguments at a call site | reminds you the instance comes first for a method |
-| `get_maximizers()` with unstorable args | explains which parameter disabled capture |
+| `slowest_args()` with unstorable args | explains which parameter disabled capture |
 | `ConstructorProfiler<int>` | says it needs a class |
 
 The one-error guarantee is enforced, not hoped for: `tests/diagnostics` compiles
@@ -350,7 +377,7 @@ int         scale(int)         noexcept;   // tracks_args == true
 ```
 
 Timing, call counts and the report are unaffected either way, and `tracks_args`
-reports it at compile time — asking for `get_maximizers()` on a metric that is
+reports it at compile time — asking for `slowest_args()` on a metric that is
 not capturing is a compile error that says why. To get capture back, measure a
 plain (throwing) lambda that calls the function.
 

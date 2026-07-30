@@ -30,7 +30,7 @@ int main() {
     Payload second = make_payload("beta");
 
     std::cout << "built " << first.name << " and " << second.name << ": "
-              << decltype(make_payload)::obj_count << " objects\n";
+              << make_payload.obj_count << " objects\n";
 
     // Neither copyable nor movable, and still built in place.
     tempo::ConstructorProfiler<Pinned> make_pinned;
@@ -39,8 +39,8 @@ int main() {
     // Whether a constructor matches is a compile-time question, so you can ask
     // it -- and passing arguments no constructor accepts is a named error rather
     // than a wall of overload-resolution noise.
-    static_assert(decltype(make_payload)::can_construct<const char*>);
-    static_assert(!decltype(make_payload)::can_construct<int, int>);
+    static_assert(make_payload.can_construct<const char*>);
+    static_assert(!make_payload.can_construct<int, int>);
 
     // This counts objects made *through the profiler*. A plain Payload p{"x"}
     // elsewhere is invisible to it, and so are copies and destructions. A

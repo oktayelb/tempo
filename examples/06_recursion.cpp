@@ -29,7 +29,7 @@ int main() {
     const int result = fibonacci(24);
 
 #if TEMPO_ENABLED
-    const auto stats = decltype(fibonacci)::snapshot();
+    const auto stats = fibonacci.snapshot();
 
     std::cout << "TEMPO_COUNT_RECURSION = " << TEMPO_COUNT_RECURSION << "\n"
               << "  fibonacci(24)    : " << result << "\n"

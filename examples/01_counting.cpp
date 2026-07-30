@@ -27,6 +27,6 @@ int main() {
     // The counter belongs to the wrapped function, not to the wrapper object:
     // it is a static member of Callable<&add>, so two wrappers over the same
     // function share one count.
-    std::cout << "add    : " << decltype(counted_add)::call_count << " calls\n";
-    std::cout << "lookup : " << decltype(counted_lookup)::call_count << " calls\n";
+    std::cout << "add    : " << counted_add.call_count << " calls\n";
+    std::cout << "lookup : " << counted_lookup.call_count << " calls\n";
 }

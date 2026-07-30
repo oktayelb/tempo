@@ -238,7 +238,7 @@ struct UnsupportedCallable {
     "  call in a plain (throwing) lambda and measuring that gets capture back.\n"   \
     "  Timing, call counts and the report are unaffected; only argument capture\n"  \
     "  switches itself off. Query it first with:\n"                                 \
-    "      if constexpr (decltype(m)::tracks_args) { ... m.get_maximizers() ... }"
+    "      if constexpr (m.tracks_args) { ... m.slowest_args() ... }"
 
 
 struct UnsupportedSignature {
@@ -996,16 +996,16 @@ public:
             TEMPO_BAD_CALL_ARGUMENTS_MESSAGE);
     }
 
-    StoredArgsType get_minimizers() const {
+    StoredArgsType fastest_args() const {
         static_assert(tracks_args,
-            "tempo: get_minimizers() is unavailable -- this callable's arguments are not stored.\n"
+            "tempo: fastest_args() is unavailable -- this callable's arguments are not stored.\n"
             TEMPO_ARGS_NOT_STORED_MESSAGE);
         const std::lock_guard<std::mutex> guard{stats_mutex};
         return min_args;
     }
-    StoredArgsType get_maximizers() const {
+    StoredArgsType slowest_args() const {
         static_assert(tracks_args,
-            "tempo: get_maximizers() is unavailable -- this callable's arguments are not stored.\n"
+            "tempo: slowest_args() is unavailable -- this callable's arguments are not stored.\n"
             TEMPO_ARGS_NOT_STORED_MESSAGE);
         const std::lock_guard<std::mutex> guard{stats_mutex};
         return max_args;

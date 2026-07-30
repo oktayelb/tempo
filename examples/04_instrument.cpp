@@ -33,11 +33,13 @@ int main() {
     handle_request(20, 103);
 
 #if TEMPO_ENABLED
-    const auto stats = decltype(handle_request)::snapshot();
+    const auto stats = handle_request.snapshot();
+    const auto [slowest_ms, slowest_id] = stats.max_args;
 
     std::cout << "calls   : " << stats.calls << "\n"
-              << "slowest : request " << std::get<1>(stats.max_args)
-              << "  (" << stats.max_duration.count() << " ms)\n";
+              << "slowest : request " << slowest_id
+              << "  (" << stats.max_duration.count() << " ms, asked for "
+              << slowest_ms << ")\n";
 
     // The call site is still captured, even though the call is a plain
     // handle_request(...): operator() carries a source_location whose default
