@@ -50,10 +50,9 @@ clang++ -std=c++20 -O2 -I/path/to/tempo your.cpp -o your_program
 cl /std:c++20 /Zc:preprocessor /EHsc /O2 /I path\to\tempo your.cpp
 ```
 
-`/Zc:preprocessor` is **required** on MSVC, not optional: `TEMPO_METRICS_CALL`
-and `TEMPO_PROFILE_CALL` use `__VA_OPT__`, which the traditional MSVC
-preprocessor does not implement. `std::source_location` needs VS 2019 16.10 or
-newer.
+`/Zc:preprocessor` is **required** on MSVC if you use `TEMPO_PROFILE_CALL`: it
+uses `__VA_OPT__`, which the traditional MSVC preprocessor does not implement.
+`std::source_location` needs VS 2019 16.10 or newer.
 
 `-pthread` is required wherever your standard library needs it for `<mutex>` and
 `<thread>`; on glibc 2.34 and later it links without, but pass it anyway.
@@ -126,48 +125,46 @@ call site alone. A variable and a function cannot share a name in one scope but
 they can across scopes, so the function lives in a nested namespace and the
 wrapper takes its name outside; `fibonacci(26)` then resolves to the wrapper.
 
-The call site is still recorded. For free functions and callable objects,
-`Metrics::operator()` is declared with the callable's exact parameter list plus a
-trailing `std::source_location` that defaults to `current()` — and because that
-parameter pack comes from the class template rather than being deduced from the
-call, the default argument is evaluated at the caller. A deduced pack cannot do
-this, which is why `TEMPO_METRICS_CALL` exists at all.
+The call site is still recorded, and no macro is involved. `Metrics::operator()`
+is declared with the callable's exact parameter list plus a trailing
+`std::source_location` that defaults to `current()` — and because those
+parameters come from the class template rather than being deduced from the call,
+the default argument is evaluated at the caller.
 
 Define `TEMPO_ENABLED` as `0` before including and every instrumented name
 collapses to a plain function pointer that the optimizer inlines away, so the
 same source builds with tempo entirely absent.
 
 Member functions cannot use the seam — `service.handle(...)` offers no free name
-for a wrapper to shadow — so they keep the variadic `operator()` (which still
-accepts `ClassName&`, `ClassName*`, `reference_wrapper` and smart pointers) and
-`TEMPO_METRICS_CALL` for call-site locations.
-
-### When you need the call macros
-
-Less often than it looks. A plain call captures the caller wherever the wrapper
-can be given a fixed signature, which is everything `tempo::measure` wraps except
-member functions:
+for a wrapper to shadow — so the instance is passed as the first argument. That
+one parameter is deduced, so `ClassName&`, `ClassName*`, `reference_wrapper` and
+smart pointers all still bind, while the method's own parameters stay fixed and
+the location keeps defaulting at the caller:
 
 ```cpp
-auto m = tempo::measure([](int rounds, int id) { /* ... */ return id; });
-m(12, 302);                    // call site captured, no macro
-
-TEMPO_CALLABLE_METRICS(fibonacci) fib;
-fib(32);                       // likewise for a free function
+tempo::CallableMetrics<&Service::handle> handle;
+handle(service, 42);        // object first, then the method's arguments
+handle(&service, 42);       // pointer, reference_wrapper and smart pointers too
 ```
 
-| | plain call | needs the macro |
-|---|---|---|
-| `Metrics` over a free function | captures the caller | — |
-| `Metrics` over a lambda or functor | captures the caller | — |
-| `Metrics` over a member function | counted and timed, location is `tempo.hpp` | `TEMPO_METRICS_CALL` |
-| `Profiler` (any callable) | location is `tempo.hpp` | `TEMPO_PROFILE_CALL` |
+A deduced *pack* could not do this — it would swallow the trailing location
+argument — but a single deduced parameter followed by fixed ones can, which is
+why member calls need no macro either.
 
-`Profiler` is the exception across the board: its `operator()` is variadic for
-every callable kind and calls `source_location::current()` in its own body, so
-the location it records is the header's, not yours. Counting is unaffected —
-only the reported call site is. Use `TEMPO_PROFILE_CALL` whenever the location
-matters, or `tempo::measure` instead, which does not need it.
+### `Metrics` needs no macro; `Profiler` still does
+
+| | plain call |
+|---|---|
+| `Metrics` over a free function | captures the caller |
+| `Metrics` over a lambda or functor | captures the caller |
+| `Metrics` over a member function | captures the caller |
+| `Profiler` (any callable) | location is `tempo.hpp`; use `TEMPO_PROFILE_CALL` |
+
+`Profiler` is the exception: its `operator()` is variadic for every callable kind
+and calls `source_location::current()` in its own body, so the location it
+records is the header's, not yours. Counting is unaffected — only the reported
+call site is. Use `TEMPO_PROFILE_CALL` whenever the location matters, or
+`tempo::measure` instead, which does not need it.
 
 ## Recursion
 

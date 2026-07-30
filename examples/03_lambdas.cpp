@@ -31,8 +31,8 @@ int main() {
     });
 
     // Ordinary calls. A lambda has a concrete signature, so the wrapper's
-    // operator() is built from it and the call site is captured without a macro
-    // -- TEMPO_METRICS_CALL is only needed for member functions.
+    // operator() is built from it and the call site is captured with no macro
+    // and nothing to remember.
     spin(3, 301);
     spin(12, 302);
     spin(1, 303);

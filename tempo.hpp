@@ -74,7 +74,6 @@
 #define TEMPO_CALLABLE_PROFILER(callable) ::tempo::CallableProfiler<&callable>
 #define TEMPO_CALLABLE_METRICS(callable) ::tempo::CallableMetrics<&callable>
 #define TEMPO_PROFILE_CALL(profiler, ...) (profiler).call_at(::std::source_location::current() __VA_OPT__(,) __VA_ARGS__)
-#define TEMPO_METRICS_CALL(metrics, ...) (metrics).call_at(::std::source_location::current() __VA_OPT__(,) __VA_ARGS__)
 
 namespace tempo{
 
@@ -614,7 +613,7 @@ struct Callable : callable_binding::Implementation<CallableValue>::Type {
         "  instead -- those are objects, not function pointers, and an object\n"
         "  cannot be a template argument:\n"
         "      auto m = tempo::measure(my_lambda);\n"
-        "      TEMPO_METRICS_CALL(m, arg1, arg2);");
+        "      m(arg1, arg2);");
 
 
     using CallableType = typename callable_binding::Implementation<CallableValue>::Type;
@@ -781,15 +780,6 @@ struct VariadicCall {
         return static_cast<const Derived&>(*this).call_at(
             std::source_location::current(), std::forward<decltype(args)>(args)...);
     }
-
-
-    typename CallableType::ReturnType operator()(auto&&... args) const
-        requires (!std::invocable<const CallableType&, decltype(args)...>)
-    {
-        static_assert(diagnostics::always_false<decltype(args)...>,
-            "tempo: this callable cannot be invoked with the arguments you passed.\n"
-            TEMPO_BAD_CALL_ARGUMENTS_MESSAGE);
-    }
 };
 
 
@@ -807,13 +797,56 @@ struct FixedSignatureCall<Derived, CallableType, std::tuple<Args...>> {
         return static_cast<const Derived&>(*this).call_at(
             location, static_cast<Args&&>(args)...);
     }
+
+
+    typename CallableType::ReturnType operator()(auto&&... args) const
+        requires (!std::invocable<const CallableType&, decltype(args)...>)
+    {
+        static_assert(diagnostics::always_false<decltype(args)...>,
+            "tempo: this callable cannot be invoked with the arguments you passed.\n"
+            TEMPO_BAD_CALL_ARGUMENTS_MESSAGE);
+    }
+};
+
+
+template <typename Derived, typename CallableType, typename ArgsTuple>
+struct MemberCall;
+
+template <typename Derived, typename CallableType, typename... Args>
+struct MemberCall<Derived, CallableType, std::tuple<Args...>> {
+
+    template <typename Self>
+        requires std::invocable<const CallableType&, Self, Args...>
+    typename CallableType::ReturnType operator()(
+        Self&& self, Args... args,
+        std::source_location location = std::source_location::current()) const
+        noexcept(CallableType::is_noexcept)
+    {
+        return static_cast<const Derived&>(*this).call_at(
+            location, std::forward<Self>(self), static_cast<Args&&>(args)...);
+    }
+
+
+    typename CallableType::ReturnType operator()(auto&&... args) const
+        requires (!std::invocable<const CallableType&, decltype(args)...>)
+    {
+        static_assert(diagnostics::always_false<decltype(args)...>,
+            "tempo: this callable cannot be invoked with the arguments you passed.\n"
+            TEMPO_BAD_CALL_ARGUMENTS_MESSAGE);
+    }
 };
 
 template <typename Derived, typename CallableType>
-using CallOperator = std::conditional_t<
+using SignatureCall = std::conditional_t<
     CallableType::is_member,
-    VariadicCall<Derived, CallableType>,
+    MemberCall<Derived, CallableType, typename CallableType::ArgsType>,
     FixedSignatureCall<Derived, CallableType, typename CallableType::ArgsType>>;
+
+template <typename Derived, typename CallableType>
+using CallOperator = std::conditional_t<
+    std::derived_from<CallableType, diagnostics::UnsupportedCallable>,
+    VariadicCall<Derived, CallableType>,
+    SignatureCall<Derived, CallableType>>;
 
 } // namespace call_operators
 
@@ -992,7 +1025,7 @@ public:
         requires (!std::invocable<const CallableType&, decltype(args)...>)
     {
         static_assert(diagnostics::always_false<decltype(args)...>,
-            "tempo: TEMPO_METRICS_CALL -- this callable cannot be invoked with these arguments.\n"
+            "tempo: call_at -- this callable cannot be invoked with these arguments.\n"
             TEMPO_BAD_CALL_ARGUMENTS_MESSAGE);
     }
 
@@ -1196,3 +1229,12 @@ private:
     };
     };
  };
+
+// These carry the shared paragraphs of the static_assert messages above. They
+// are expanded by the time the header is parsed, so undefining them here keeps
+// them out of every translation unit that includes tempo.
+#undef TEMPO_C_VARIADIC_MESSAGE
+#undef TEMPO_NOT_A_WRAPPER_MESSAGE
+#undef TEMPO_BAD_CALL_ARGUMENTS_MESSAGE
+#undef TEMPO_NOT_A_CALLABLE_OBJECT_MESSAGE
+#undef TEMPO_ARGS_NOT_STORED_MESSAGE

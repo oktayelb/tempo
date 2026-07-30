@@ -139,7 +139,7 @@ TEST(immovable_return_types_pass_through_every_layer) {
     using Metrics = TEMPO_CALLABLE_METRICS(make_immovable);
     Metrics metrics;
     CHECK_EQ(metrics(13).value, 13);
-    CHECK_EQ(TEMPO_METRICS_CALL(metrics, 14).value, 14);
+    CHECK_EQ(metrics(14).value, 14);
 }
 
 TEST(reference_returns_stay_references) {

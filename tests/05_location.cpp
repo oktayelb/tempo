@@ -90,43 +90,57 @@ TEST(the_enclosing_function_name_is_recorded) {
     CHECK(function.find("the_enclosing_function_name_is_recorded") != std::string::npos);
 }
 
-TEST(explicit_macro_call_also_records_the_call_site) {
+TEST(a_locally_declared_metric_also_records_the_call_site) {
     using Metrics = TEMPO_CALLABLE_METRICS(plain);
     Metrics::reset();
     Metrics metrics;
 
     const int expected = __LINE__ + 1;
-    TEMPO_METRICS_CALL(metrics, 5);
+    metrics(5);
 
     CHECK_EQ(Metrics::snapshot().last_call_location.line(),
              static_cast<unsigned>(expected));
 }
 
-TEST(member_functions_capture_through_the_macro) {
+TEST(member_functions_capture_the_call_site) {
     using Metrics = TEMPO_CALLABLE_METRICS(Service::handle);
     Metrics::reset();
     Metrics metrics;
     Service service;
 
     const int expected = __LINE__ + 1;
-    TEMPO_METRICS_CALL(metrics, service, 3);
+    metrics(service, 3);
 
     CHECK_EQ(Metrics::snapshot().last_call_location.line(),
              static_cast<unsigned>(expected));
 }
 
-TEST(members_keep_the_variadic_operator_and_its_flexibility) {
-    // Members do not get the fixed signature, because the seam does not apply to
-    // them and the variadic form is what accepts every instance form. A bare
-    // call still works; it just cannot capture the caller's line.
+TEST(members_accept_every_instance_form_and_still_capture_the_caller) {
+    // The instance parameter is deduced, so every form std::invoke accepts binds
+    // to it; the method's own parameters come from the class template, which
+    // leaves the trailing source_location defaulting at the call site. A single
+    // deduced parameter can do this -- a deduced pack could not, because it
+    // would swallow the location argument.
     using Metrics = TEMPO_CALLABLE_METRICS(Service::handle);
     Metrics::reset();
     Metrics metrics;
     Service service;
 
+    const int by_reference = __LINE__ + 1;
     CHECK_EQ(metrics(service, 1), 1);
+    CHECK_EQ(Metrics::snapshot().last_call_location.line(),
+             static_cast<unsigned>(by_reference));
+
+    const int by_pointer = __LINE__ + 1;
     CHECK_EQ(metrics(&service, 2), 2);
+    CHECK_EQ(Metrics::snapshot().last_call_location.line(),
+             static_cast<unsigned>(by_pointer));
+
+    const int by_reference_wrapper = __LINE__ + 1;
     CHECK_EQ(metrics(std::ref(service), 3), 3);
+    CHECK_EQ(Metrics::snapshot().last_call_location.line(),
+             static_cast<unsigned>(by_reference_wrapper));
+
     CHECK_EQ(Metrics::snapshot().calls, 3u);
 }
 

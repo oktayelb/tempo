@@ -133,8 +133,8 @@ TEST(member_functions_are_timed_and_exclude_the_instance_from_args) {
     Metrics metrics;
 
     Service service;
-    TEMPO_METRICS_CALL(metrics, service, 6, 301);
-    TEMPO_METRICS_CALL(metrics, service, 1, 302);
+    metrics(service, 6, 301);
+    metrics(service, 1, 302);
 
     const auto stats = Metrics::snapshot();
     CHECK_EQ(stats.calls, 2u);
@@ -149,7 +149,7 @@ TEST(const_member_functions_work_through_a_const_instance) {
     Metrics metrics;
 
     const Service frozen;
-    CHECK_EQ(TEMPO_METRICS_CALL(metrics, frozen, 9), 9);
+    CHECK_EQ(metrics(frozen, 9), 9);
     CHECK_EQ(Metrics::snapshot().calls, 1u);
 }
 

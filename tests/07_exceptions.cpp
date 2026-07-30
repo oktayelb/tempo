@@ -100,7 +100,7 @@ TEST(a_throwing_member_function_behaves_the_same) {
     Metrics metrics;
     Service service;
 
-    CHECK_THROWS_AS(TEMPO_METRICS_CALL(metrics, service, 1), Boom);
+    CHECK_THROWS_AS(metrics(service, 1), Boom);
 
     const auto stats = Metrics::snapshot();
     CHECK_EQ(stats.calls, 1u);

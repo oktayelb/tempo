@@ -125,8 +125,8 @@ TEST(a_noexcept_lambda_gets_a_noexcept_wrapper) {
 
     static_assert(decltype(strict)::is_noexcept);
     static_assert(!decltype(relaxed)::is_noexcept);
-    static_assert(noexcept(TEMPO_METRICS_CALL(strict, 1)));
-    static_assert(!noexcept(TEMPO_METRICS_CALL(relaxed, 1)));
+    static_assert(noexcept(strict(1)));
+    static_assert(!noexcept(relaxed(1)));
 
     CHECK_EQ(strict(1), 2);
     CHECK_EQ(relaxed(1), 2);
@@ -225,7 +225,7 @@ TEST(the_same_parameter_still_captures_on_a_throwing_callable) {
     static_assert(!decltype(relaxed)::is_noexcept);
     static_assert(decltype(relaxed)::tracks_args);
 
-    CHECK_EQ(TEMPO_METRICS_CALL(relaxed, std::string{"hello"}), 5u);
+    CHECK_EQ(relaxed(std::string{"hello"}), 5u);
     CHECK_EQ(std::get<0>(relaxed.slowest_args()), std::string{"hello"});
 }
 
@@ -234,7 +234,7 @@ TEST(a_move_only_parameter_is_still_off_for_the_reason_it_always_was) {
         [](std::unique_ptr<int> owned) noexcept { return *owned; });
     static_assert(decltype(consume)::is_noexcept);
     static_assert(!decltype(consume)::tracks_args);
-    CHECK_EQ(TEMPO_METRICS_CALL(consume, std::make_unique<int>(99)), 99);
+    CHECK_EQ(consume(std::make_unique<int>(99)), 99);
 }
 
 // --- interaction with the rest of the header ------------------------------
