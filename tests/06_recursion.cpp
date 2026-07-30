@@ -241,13 +241,13 @@ TEST(instrument_never_routes_recursion_through_the_wrapper) {
 }
 
 TEST(report_shows_the_depth_column_only_when_something_recursed) {
-    tempo::reset_all();
+    tempo::report::reset_all();
 
     fib(12);
     square(2);
 
     std::ostringstream out;
-    tempo::report(out);
+    tempo::report::print(out);
     const std::string text = out.str();
 
 #if TEMPO_COUNT_RECURSION

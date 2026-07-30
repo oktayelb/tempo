@@ -40,7 +40,7 @@ int main() {
 
     // The report grows a depth column only when something actually recursed, so
     // an ordinary program still prints the table it always did.
-    tempo::report();
+    tempo::report::print();
 #else
     std::cout << "built with TEMPO_ENABLED=0: fibonacci(24) = " << result
               << ", with tempo out of the build.\n";

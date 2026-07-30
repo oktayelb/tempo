@@ -177,7 +177,7 @@ TEST(distinct_metrics_do_not_interfere_across_threads) {
 }
 
 TEST(report_can_be_generated_while_calls_are_in_flight) {
-    tempo::reset_all();
+    tempo::report::reset_all();
 
     using Metrics = TEMPO_CALLABLE_METRICS(spin);
     Metrics metrics;
@@ -186,7 +186,7 @@ TEST(report_can_be_generated_while_calls_are_in_flight) {
     std::thread reporter{[&] {
         while (!stop.load(std::memory_order_relaxed)) {
             std::ostringstream out;
-            tempo::report(out);
+            tempo::report::print(out);
         }
     }};
 

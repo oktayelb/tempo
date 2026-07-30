@@ -245,14 +245,14 @@ TEST(a_noexcept_callable_appears_in_the_report_like_any_other) {
     scale(5);
 
     std::ostringstream out;
-    tempo::report(out);
+    tempo::report::print(out);
     const std::string text = out.str();
     CHECK(text.find("scale") != std::string::npos);
 }
 
 TEST(a_noexcept_call_site_is_still_captured_by_the_defaulted_source_location) {
     // The seam that makes a bare scale(1) record its caller is a defaulted
-    // source_location parameter on a FIXED signature (detail::FixedSignatureCall).
+    // source_location parameter on a FIXED signature (call_operators::FixedSignatureCall).
     // That signature is where the noexcept had to be reapplied, so this checks
     // the two features still work together rather than one having displaced the
     // other.

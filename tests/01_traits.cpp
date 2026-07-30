@@ -111,31 +111,31 @@ static_assert(!std::is_same_v<tempo::Functor<std::decay_t<decltype(twin_a)>>,
 
 // std::function is a class with one non-template operator(), so it qualifies --
 // and is exactly why two std::function<int(int)> share a counter.
-static_assert(tempo::CallableObject<std::function<int(int)>>);
+static_assert(tempo::callable_traits::CallableObject<std::function<int(int)>>);
 static_assert(std::is_same_v<tempo::Functor<std::function<int(int)>>::ReturnType, int>);
 
 // ---------- the concepts reject what they should ----------
-static_assert(tempo::FunctionPointer<&free_add>);
-static_assert(!tempo::MethodPointer<&free_add>);
-static_assert(tempo::MethodPointer<&Service::handle>);
-static_assert(!tempo::FunctionPointer<&Service::handle>);
-static_assert(tempo::CallablePointer<&free_add>);
-static_assert(tempo::CallablePointer<&Service::handle>);
+static_assert(tempo::callable_traits::FunctionPointer<&free_add>);
+static_assert(!tempo::callable_traits::MethodPointer<&free_add>);
+static_assert(tempo::callable_traits::MethodPointer<&Service::handle>);
+static_assert(!tempo::callable_traits::FunctionPointer<&Service::handle>);
+static_assert(tempo::callable_traits::CallablePointer<&free_add>);
+static_assert(tempo::callable_traits::CallablePointer<&Service::handle>);
 
 struct NotCallable { int value; };
-static_assert(!tempo::CallableObject<NotCallable>);
-static_assert(!tempo::CallableObject<int>);
+static_assert(!tempo::callable_traits::CallableObject<NotCallable>);
+static_assert(!tempo::callable_traits::CallableObject<int>);
 
 // A generic lambda has no signature until called, so it must be rejected.
 constexpr auto generic = [](auto x) { return x; };
-static_assert(!tempo::CallableObject<decltype(generic)>);
+static_assert(!tempo::callable_traits::CallableObject<decltype(generic)>);
 
 // An overloaded operator() is ambiguous for &F::operator(), so it is rejected.
 struct Overloaded {
     int operator()(int) const { return 0; }
     int operator()(double) const { return 1; }
 };
-static_assert(!tempo::CallableObject<Overloaded>);
+static_assert(!tempo::callable_traits::CallableObject<Overloaded>);
 
 // ---------- Metrics and Profiler forward the traits ----------
 using AddMetrics = TEMPO_CALLABLE_METRICS(free_add);

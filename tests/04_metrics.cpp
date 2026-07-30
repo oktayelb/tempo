@@ -154,14 +154,14 @@ TEST(const_member_functions_work_through_a_const_instance) {
 }
 
 TEST(report_lists_called_metrics_and_skips_uncalled_ones) {
-    tempo::reset_all();
+    tempo::report::reset_all();
 
     using Called = TEMPO_CALLABLE_METRICS(cheap);
     Called called;
     called(1, 2);
 
     std::ostringstream out;
-    tempo::report(out);
+    tempo::report::print(out);
     const std::string text = out.str();
 
     CHECK(text.find("tempo report") != std::string::npos);
@@ -174,10 +174,10 @@ TEST(report_lists_called_metrics_and_skips_uncalled_ones) {
 }
 
 TEST(report_with_nothing_recorded_says_so) {
-    tempo::reset_all();
+    tempo::report::reset_all();
 
     std::ostringstream out;
-    tempo::report(out);
+    tempo::report::print(out);
     CHECK(out.str().find("no calls recorded") != std::string::npos);
 }
 

@@ -3,7 +3,7 @@
 // Printing a block per call is unreadable past a few dozen calls, so
 // TEMPO_PRINT_ENABLED defaults to 0 and no per-call cout is in the build at all.
 // Statistics are collected regardless, and every metric registers itself on its
-// first call -- so tempo::report() prints everything that ran, sorted by total
+// first call -- so tempo::report::print() prints everything that ran, sorted by total
 // time, without you listing anything by hand.
 
 #include "tempo.hpp"
@@ -48,8 +48,8 @@ int main() {
     for (auto& thread : pool) { thread.join(); }
 
     // Rows are sorted by total time, so the hot spot is the first line.
-    tempo::report();
+    tempo::report::print();
 
-    // tempo::report_at_exit() installs the same summary to print when the
-    // program ends, and tempo::reset_all() clears every registered metric.
+    // tempo::report::at_exit() installs the same summary to print when the
+    // program ends, and tempo::report::reset_all() clears every registered metric.
 }

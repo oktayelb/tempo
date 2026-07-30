@@ -102,7 +102,7 @@ If you define them in source instead, they must come before `#include
 
 ### Compiler-dependent output
 
-`tempo::report()` names each row by scraping `__PRETTY_FUNCTION__`, whose
+`tempo::report::print()` names each row by scraping `__PRETTY_FUNCTION__`, whose
 spelling is not standardised. A function in an anonymous namespace prints as
 `{anonymous}::f` under GCC and `&(anonymous namespace)::f` under Clang, and the
 name column is capped at 60 characters, so the longer Clang spelling may be
@@ -258,7 +258,7 @@ std::get<1>(m.get_maximizers());   // 302
 
 tempo is quiet by default. Statistics are collected on every call and read back
 through the accessors, or all at once as one sorted summary from
-`tempo::report()`:
+`tempo::report::print()`:
 
 ```
 callable                         calls    total ms      avg ms      min ms      max ms
@@ -267,8 +267,8 @@ tempo::Callable<shared_worker>    2000      1.7875      0.0009      0.0002      
 tempo::Callable<slow_path>           5      0.1220      0.0244      0.0083      0.0410
 ```
 
-Every metric registers itself on its first call. `tempo::report_at_exit()`
-prints the table when the program ends, and `tempo::reset_all()` clears
+Every metric registers itself on its first call. `tempo::report::at_exit()`
+prints the table when the program ends, and `tempo::report::reset_all()` clears
 everything. Read statistics with `snapshot()`, which returns them all under one
 lock so the numbers describe the same moment.
 

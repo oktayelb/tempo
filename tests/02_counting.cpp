@@ -191,7 +191,7 @@ TEST(reset_all_clears_every_registered_metric) {
     CHECK_GT(A::snapshot().calls, 0u);
     CHECK_GT(M::snapshot().calls, 0u);
 
-    tempo::reset_all();
+    tempo::report::reset_all();
 
     CHECK_EQ(A::snapshot().calls, 0u);
     CHECK_EQ(M::snapshot().calls, 0u);

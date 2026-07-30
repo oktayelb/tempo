@@ -38,9 +38,9 @@ int main() {
 
     // The concepts are usable directly, which is how the macros reject a bad
     // argument at the call site instead of somewhere inside the library.
-    static_assert(tempo::FunctionPointer<&scale>);
-    static_assert(tempo::MethodPointer<&Session::is_open>);
-    static_assert(!tempo::MethodPointer<&scale>);
+    static_assert(tempo::callable_traits::FunctionPointer<&scale>);
+    static_assert(tempo::callable_traits::MethodPointer<&Session::is_open>);
+    static_assert(!tempo::callable_traits::MethodPointer<&scale>);
 
     std::cout << "everything above was checked while compiling\n"
               << "scale : " << Scale::arg_count << " args, "

@@ -297,7 +297,7 @@ TEST(a_large_object_as_the_member_instance) {
 }
 
 TEST(many_distinct_instantiations_all_register_for_reporting) {
-    tempo::reset_all();
+    tempo::report::reset_all();
 
     using A = TEMPO_CALLABLE_METRICS(named::alpha);
     using B = TEMPO_CALLABLE_METRICS(named::beta);
@@ -311,7 +311,7 @@ TEST(many_distinct_instantiations_all_register_for_reporting) {
     c(1, 2);
 
     std::ostringstream out;
-    tempo::report(out);
+    tempo::report::print(out);
     const std::string text = out.str();
 
     // Each instantiation registers itself on its first call, so all three must
@@ -322,7 +322,7 @@ TEST(many_distinct_instantiations_all_register_for_reporting) {
 }
 
 TEST(an_uncalled_metric_never_appears_in_the_report) {
-    tempo::reset_all();
+    tempo::report::reset_all();
 
     using Called = TEMPO_CALLABLE_METRICS(named::alpha);
     using NeverCalled = TEMPO_CALLABLE_METRICS(named::gamma);
@@ -333,7 +333,7 @@ TEST(an_uncalled_metric_never_appears_in_the_report) {
     (void)never_called;
 
     std::ostringstream out;
-    tempo::report(out);
+    tempo::report::print(out);
     const std::string text = out.str();
 
     CHECK(text.find("alpha") != std::string::npos);
@@ -342,7 +342,7 @@ TEST(an_uncalled_metric_never_appears_in_the_report) {
 }
 
 TEST(report_truncates_absurdly_long_type_names_without_breaking) {
-    tempo::reset_all();
+    tempo::report::reset_all();
 
     // std::function's type name is long; the table caps the column at 60 and
     // must not corrupt its own layout doing so.
@@ -354,7 +354,7 @@ TEST(report_truncates_absurdly_long_type_names_without_breaking) {
     wrapped(1, 2, 3);
 
     std::ostringstream out;
-    tempo::report(out);
+    tempo::report::print(out);
     const std::string text = out.str();
 
     CHECK(text.find("tempo report") != std::string::npos);
