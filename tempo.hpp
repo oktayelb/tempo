@@ -77,7 +77,7 @@
 // A variable and a function cannot share a name in one scope, but they can
 // across scopes -- so the function lives in a nested namespace and the wrapper
 // takes its name outside. Because the wrapper's operator() carries a defaulted
-// source_location (see detail::FixedSignatureCall), the call site is still
+// source_location (see detail::call::FixedSignatureCall), the call site is still
 // recorded even though nothing at the call site changed.
 //
 // Member functions cannot use this: service.handle(...) offers no free name for
@@ -158,7 +158,12 @@ concept MethodPointer = std::is_member_function_pointer_v<decltype(Value)>;
 template <auto Value>
 concept CallablePointer = FunctionPointer<Value> || MethodPointer<Value>;
 
-namespace detail {
+// Which parameter lists tempo can keep a copy of.
+//
+// Metrics remembers the arguments of the fastest and the slowest call it has
+// seen. Whether it can do that at all is decided here, from the parameter list
+// alone, and the verdict surfaces as Metrics::tracks_args.
+namespace detail::storage {
 
 // To store arguments we strip the references off the signature:
 // std::tuple<const T&> is neither default constructible nor reassignable.
@@ -204,9 +209,17 @@ struct ArgsAreNothrowStorable<std::tuple<Ts...>>
           (std::is_nothrow_copy_assignable_v<std::decay_t<Ts>>       && ...) &&
           (std::is_nothrow_move_assignable_v<std::decay_t<Ts>>       && ...)> {};
 
-// A template-dependent "false", so the static_assert only fires when the
-// template is actually instantiated. A plain "false" would make the compiler
-// reject it on sight, before any instantiation.
+} // namespace detail::storage
+
+// The shared vocabulary: the pieces every other block below reaches for.
+//
+// This one keeps the bare "detail" name deliberately. always_false and the
+// Unsupported* stand-ins are used from five of the six nested namespaces below
+// and from the public templates as well, and a nested namespace can see its
+// enclosing one without qualification -- so leaving them here is what lets the
+// blocks below stay clean. It is also what keeps them short in compiler output,
+// where detail::UnsupportedCallable is a name users actually read.
+namespace detail {
 template <typename...>
 inline constexpr bool always_false = false;
 
@@ -215,24 +228,7 @@ inline constexpr bool always_false = false;
 template <auto...>
 inline constexpr bool always_false_value = false;
 
-//-------------------------------------------------------------------
-// Keeping a failed assert to ONE message.
-//
-// Every static_assert below sits in a template that the rest of the header goes
-// on to use: Callable inherits from it, Metrics reads its typedefs, the call
-// operator forwards to it. If the failing template were left empty, the assert
-// would be followed by "incomplete type", "no member named ReturnType", "no
-// member named operator()" and so on -- exactly the wall of errors these asserts
-// exist to remove.
-//
-// So each failing template inherits UnsupportedCallable instead. It provides
-// every member the downstream machinery looks for, which keeps the compiler
-// quiet after the one message we actually wrote. None of it ever runs: the
-// program does not compile.
-//
-// A parameter type that is deliberately not default-constructible, so
-// ArgsAreStorable is false for the stand-in and argument capture switches itself
-// off rather than trying to store this type.
+
 struct UnsupportedArg {
     UnsupportedArg() = delete;
 };
@@ -324,59 +320,10 @@ struct UnsupportedSignature {
     static constexpr std::size_t total_arg_size = 0;
 };
 
-// Decomposes the signature of a member function pointer. This is how we read the
-// signature of lambdas and functors, via &F::operator().
-//
-// The primary template is the failure case: a member function whose shape none
-// of the specializations below match. It reports that instead of being left
-// incomplete, which is what produced "invalid use of incomplete type".
-template <typename MemberPointer>
-struct MemberSignature : UnsupportedSignature {
-    static_assert(always_false<MemberPointer>,
-        "tempo: this callable object's operator() has a shape tempo cannot read.\n"
-        "  tempo supports a plain operator(), optionally const and/or noexcept.\n"
-        "  It does NOT support a ref-qualified operator() (declared with a trailing\n"
-        "  '&' or '&&'), a volatile operator(), or a C-style variadic one ('...').\n"
-        "  Fix: declare the functor's operator() without the ref-qualifier, or wrap\n"
-        "  the object in a lambda with concrete parameter types and pass that to\n"
-        "  tempo::measure(...).");
-};
+} // namespace detail
 
-template <typename Owner, typename ret, typename... args>
-struct MemberSignature<ret (Owner::*)(args...)> {
-    using ReturnType = ret;
-    using ArgsType = std::tuple<args...>;
-    static constexpr bool is_const = false;
-    static constexpr bool is_noexcept = false;
-    static constexpr auto total_arg_size = (sizeof(args) + ... + 0);
-};
-
-template <typename Owner, typename ret, typename... args>
-struct MemberSignature<ret (Owner::*)(args...) const> {
-    using ReturnType = ret;
-    using ArgsType = std::tuple<args...>;
-    static constexpr bool is_const = true;
-    static constexpr bool is_noexcept = false;
-    static constexpr auto total_arg_size = (sizeof(args) + ... + 0);
-};
-
-template <typename Owner, typename ret, typename... args>
-struct MemberSignature<ret (Owner::*)(args...) noexcept> {
-    using ReturnType = ret;
-    using ArgsType = std::tuple<args...>;
-    static constexpr bool is_const = false;
-    static constexpr bool is_noexcept = true;
-    static constexpr auto total_arg_size = (sizeof(args) + ... + 0);
-};
-
-template <typename Owner, typename ret, typename... args>
-struct MemberSignature<ret (Owner::*)(args...) const noexcept> {
-    using ReturnType = ret;
-    using ArgsType = std::tuple<args...>;
-    static constexpr bool is_const = true;
-    static constexpr bool is_noexcept = true;
-    static constexpr auto total_arg_size = (sizeof(args) + ... + 0);
-};
+// The machinery behind tempo::report(), which is defined directly below.
+namespace detail::reporting {
 
 // Scrapes the type name out of __PRETTY_FUNCTION__, so the summary table shows a
 // readable name like "Callable<fibonacci>". typeid(...).name() would be mangled
@@ -443,19 +390,19 @@ inline void add_to_registry(RowFetcher fetcher, Resetter resetter) {
     reg.resetters.push_back(resetter);
 }
 
-} // namespace detail
+} // namespace detail::reporting
 
 // A summary of every registered metric: one table, sorted by total time.
 inline void report(std::ostream& out = std::cout) {
-    std::vector<detail::ReportRow> rows;
+    std::vector<detail::reporting::ReportRow> rows;
     {
-        detail::Registry& reg = detail::registry();
+        detail::reporting::Registry& reg = detail::reporting::registry();
         const std::lock_guard<std::mutex> guard{reg.mutex};
         rows.reserve(reg.fetchers.size());
-        for (const detail::RowFetcher fetch : reg.fetchers) { rows.push_back(fetch()); }
+        for (const detail::reporting::RowFetcher fetch : reg.fetchers) { rows.push_back(fetch()); }
     }
 
-    std::erase_if(rows, [](const detail::ReportRow& row) { return row.calls == 0; });
+    std::erase_if(rows, [](const detail::reporting::ReportRow& row) { return row.calls == 0; });
     std::ranges::sort(rows, [](const auto& left, const auto& right) {
         return left.total_ms > right.total_ms;
     });
@@ -474,7 +421,7 @@ inline void report(std::ostream& out = std::cout) {
     // wrapper. A program without recursion prints exactly the table it always
     // printed.
     const bool show_depth = std::ranges::any_of(
-        rows, [](const detail::ReportRow& row) { return row.max_depth > 1; });
+        rows, [](const detail::reporting::ReportRow& row) { return row.max_depth > 1; });
     const std::size_t rule = width + 56 + (show_depth ? 8 : 0);
 
     out << std::left << std::setw(static_cast<int>(width)) << "callable"
@@ -506,9 +453,9 @@ inline void report(std::ostream& out = std::cout) {
 
 // Resets every registered metric.
 inline void reset_all() {
-    detail::Registry& reg = detail::registry();
+    detail::reporting::Registry& reg = detail::reporting::registry();
     const std::lock_guard<std::mutex> guard{reg.mutex};
-    for (const detail::Resetter reset : reg.resetters) { reset(); }
+    for (const detail::reporting::Resetter reset : reg.resetters) { reset(); }
 }
 
 // For those who want the summary printed automatically when the program ends.
@@ -524,17 +471,71 @@ inline void report_at_exit(std::ostream& out = std::cout) {
 // A callable object: lambda, functor, std::function. The type-domain counterpart
 // of CallablePointer -- between them they are everything tempo can measure.
 //
-// It needs a single,
-// non-template operator() -- generic lambdas ([](auto x){...}) and functors with
-// an overloaded operator() are rejected here, because they have no signature
-// until they are called. The rejection is not silent: you get a constraint-not-
-// satisfied error.
+// It needs a single, non-template operator() -- generic lambdas ([](auto x){...})
+// and functors with an overloaded operator() are rejected here, because they have
+// no signature until they are called. The rejection is not silent: you get a
+// constraint-not-satisfied error.
 template <typename F>
 concept CallableObject =
     std::is_class_v<F> &&
     requires { &F::operator(); };
 
-namespace detail {
+// Reading a callable object's signature.
+//
+// A lambda or functor carries its signature on its operator(), so both templates
+// here are about getting at it: MemberSignature decomposes the member pointer,
+// FunctorSignature is what hands it that pointer. Member FUNCTIONS wrapped
+// through TEMPO_METHOD do not come through here at all -- they are decomposed by
+// detail::MethodImpl further down.
+namespace detail::signature {
+
+template <typename MemberPointer>
+struct MemberSignature : UnsupportedSignature {
+    static_assert(always_false<MemberPointer>,
+        "tempo: this callable object's operator() has a shape tempo cannot read.\n"
+        "  tempo supports a plain operator(), optionally const and/or noexcept.\n"
+        "  It does NOT support a ref-qualified operator() (declared with a trailing\n"
+        "  '&' or '&&'), a volatile operator(), or a C-style variadic one ('...').\n"
+        "  Fix: declare the functor's operator() without the ref-qualifier, or wrap\n"
+        "  the object in a lambda with concrete parameter types and pass that to\n"
+        "  tempo::measure(...).");
+};
+
+template <typename Owner, typename ret, typename... args>
+struct MemberSignature<ret (Owner::*)(args...)> {
+    using ReturnType = ret;
+    using ArgsType = std::tuple<args...>;
+    static constexpr bool is_const = false;
+    static constexpr bool is_noexcept = false;
+    static constexpr auto total_arg_size = (sizeof(args) + ... + 0);
+};
+
+template <typename Owner, typename ret, typename... args>
+struct MemberSignature<ret (Owner::*)(args...) const> {
+    using ReturnType = ret;
+    using ArgsType = std::tuple<args...>;
+    static constexpr bool is_const = true;
+    static constexpr bool is_noexcept = false;
+    static constexpr auto total_arg_size = (sizeof(args) + ... + 0);
+};
+
+template <typename Owner, typename ret, typename... args>
+struct MemberSignature<ret (Owner::*)(args...) noexcept> {
+    using ReturnType = ret;
+    using ArgsType = std::tuple<args...>;
+    static constexpr bool is_const = false;
+    static constexpr bool is_noexcept = true;
+    static constexpr auto total_arg_size = (sizeof(args) + ... + 0);
+};
+
+template <typename Owner, typename ret, typename... args>
+struct MemberSignature<ret (Owner::*)(args...) const noexcept> {
+    using ReturnType = ret;
+    using ArgsType = std::tuple<args...>;
+    static constexpr bool is_const = true;
+    static constexpr bool is_noexcept = true;
+    static constexpr auto total_arg_size = (sizeof(args) + ... + 0);
+};
 
 // Reads a callable object's signature off its operator(). The unconstrained
 // primary is the failure case -- F has no single operator() to take the address
@@ -550,6 +551,12 @@ requires CallableObject<F>
 struct FunctorSignature<F> {
     using Type = MemberSignature<decltype(&F::operator())>;
 };
+
+} // namespace detail::signature
+
+// Is a type one of tempo's own wrapper types, and what to fall back on when it
+// is not. This is the guard on the front door of Metrics and Profiler.
+namespace detail::wrapper {
 
 // What Metrics and Profiler need from whatever they are told to wrap. Used to
 // catch tempo::Metrics<MyLambda>, which should have been tempo::measure(lambda):
@@ -607,31 +614,11 @@ struct WrapperOrStandIn<W> {
     "  of [](auto x){ ... }. For a plain function use TEMPO_INSTRUMENT or\n"        \
     "  TEMPO_CALLABLE_METRICS instead of a factory."
 
-} // namespace detail
+} // namespace detail::wrapper
 
 namespace detail {
 
-// Why Function and Method below are keyed on the callable's TYPE and not on the
-// pointer value, which is the obvious thing and does not work.
-//
-// A pointer to a noexcept function converts implicitly to a pointer to a plain
-// one. Deducing ret(*)(args...) from a noexcept pointer therefore requires a
-// conversion, and the compilers do not agree about it: GCC refuses and falls to
-// the primary template, while Clang performs it and drops the qualifier where no
-// trait inside the specialization can read it back. Adding a second partial
-// specialization for the noexcept shape does not settle it either -- both then
-// match on Clang, and it reports them as ambiguous. Constraints do not break the
-// tie, because from inside the plain specialization the noexcept is already gone
-// and there is nothing left to constrain on.
-//
-// Matching on the function TYPE has no conversion in it. ret(args...) and
-// ret(args...) noexcept are distinct types, each matches exactly one
-// specialization, and both compilers agree -- which also means the C-style
-// variadic shape lands on the primary here instead of quietly losing its
-// ellipsis to deduction, as it used to.
-//
-// The body is shared rather than written out per shape, since the exception
-// specification is the only thing that differs.
+
 template <auto func_ptr, bool Noexcept, typename ret, typename... args>
 struct FunctionBody {
     using  ReturnType = ret;
@@ -645,12 +632,7 @@ struct FunctionBody {
     static constexpr auto total_arg_size = (sizeof(args) + ... + 0);
     inline static std::atomic<CallCount> call_count{0};
 
-    // The parameters are forwarding references: an argument reaches func_ptr with
-    // its own value category, without a copy in between. The std::invocable
-    // constraint keeps the error at the call site rather than inside std::invoke.
-    //
-    // noexcept follows the function, so the wrapper's type carries the same
-    // guarantee it had. Nothing else in here can throw: the counter is atomic.
+
     template <typename... CallArgs>
         requires std::invocable<decltype(func_ptr), CallArgs...>
     ReturnType operator()(CallArgs&&... call_args) const noexcept(Noexcept) {
@@ -659,10 +641,7 @@ struct FunctionBody {
     }
 };
 
-// The primary is the failure case: a function type none of the specializations
-// match, which in practice means a C-style variadic one. Reporting it here is
-// what keeps TEMPO_INSTRUMENT(impl::f, f) on an unsupported function to a single
-// message.
+
 template <typename Signature, auto func_ptr>
 struct FunctionImpl : UnsupportedCallable {
     static_assert(always_false_value<func_ptr>,
@@ -751,11 +730,7 @@ template<auto MethodValue>
 requires MethodPointer<MethodValue>
 struct Method : detail::MethodImpl<decltype(MethodValue), MethodValue> {};
 
-// The unconstrained primary is the failure case -- CallableValue is neither a
-// function pointer nor a member function pointer. It resolves to the stand-in so
-// that Callable below can report the problem itself, in one message, instead of
-// the constraint failing here and the user being told only "constraints not
-// satisfied".
+
 template<auto CallableValue>
 struct CallableImplementation {
     using Type = detail::UnsupportedCallable;
@@ -775,9 +750,7 @@ struct CallableImplementation<CallableValue> {
 
 template<auto CallableValue>
 struct Callable : CallableImplementation<CallableValue>::Type {
-    // The single most common mistake: pointing the macros at a lambda or a
-    // functor. Those are objects, and an object with state can never be a
-    // template argument -- which is why the factories exist.
+
     static_assert(CallablePointer<CallableValue>,
         "tempo: the template argument is not a function or member function pointer.\n"
         "  TEMPO_INSTRUMENT, TEMPO_CALLABLE_METRICS and TEMPO_CALLABLE_PROFILER take\n"
@@ -789,27 +762,12 @@ struct Callable : CallableImplementation<CallableValue>::Type {
         "      auto m = tempo::measure(my_lambda);\n"
         "      TEMPO_METRICS_CALL(m, arg1, arg2);");
 
-    // There used to be two more asserts here, rejecting noexcept callables. They
-    // are gone: Function and Method now have exact specializations for the
-    // noexcept shapes, so both compilers match one and neither has to drop the
-    // qualifier to get there. What made this the right place for the check --
-    // that the template argument's own type is still intact here, while inside a
-    // specialization Clang may already have dropped the noexcept -- is exactly
-    // what an exact specialization fixes at the source.
 
     using CallableType = typename CallableImplementation<CallableValue>::Type;
     using CallableType::operator();
 };
 
-// Function and Method hold no state, so their template argument can be a pointer
-// (an NTTP). Lambdas and functors, however, are OBJECTS: a capturing lambda can
-// never be an NTTP. That is why Functor is templated on the type and carries the
-// callable object itself inside.
-// Deliberately unconstrained, so that a wrong F produces the message below
-// rather than a bare "constraints not satisfied". The signature lookup goes
-// through detail::FunctorSignature, which tolerates an F that has no readable
-// operator() -- taking &F::operator() directly here would be a hard error before
-// the assert could ever be reached.
+
 template <typename F>
 struct Functor {
 
@@ -817,7 +775,7 @@ struct Functor {
         "tempo: this is not a callable object tempo can read.\n"
         TEMPO_NOT_A_CALLABLE_OBJECT_MESSAGE);
 
-    using SignatureType = typename detail::FunctorSignature<F>::Type;
+    using SignatureType = typename detail::signature::FunctorSignature<F>::Type;
     using ReturnType = typename SignatureType::ReturnType;
     using ArgsType   = typename SignatureType::ArgsType;
     using ClassType  = F;
@@ -847,11 +805,7 @@ struct Functor {
         requires std::invocable<F&, CallArgs...>
     ReturnType operator()(CallArgs&&... call_args) const noexcept(is_noexcept) {
         call_count++;
-        // The `if constexpr` serves only the failure case above, where ReturnType
-        // is the stand-in while the object itself returns void. On the real path
-        // ReturnType is read off this very operator(), so the two always agree
-        // and the else branch is the one taken -- it still returns the call
-        // expression directly, so the return value is never copied or moved.
+
         if constexpr (std::is_void_v<std::invoke_result_t<F&, CallArgs...>> &&
                       !std::is_void_v<ReturnType>) {
             std::invoke(target, std::forward<CallArgs>(call_args)...);
@@ -864,7 +818,10 @@ struct Functor {
 };
 
 
-namespace detail {
+// Reopened here rather than merged with the block above, because these
+// specializations name Callable, Function, Method and Functor -- none of which
+// exist yet at that point in the file.
+namespace detail::wrapper {
 
 // Is W one of tempo's own wrapper templates?
 //
@@ -892,7 +849,7 @@ inline constexpr bool is_tempo_wrapper_template<Functor<F>> = true;
 template <>
 inline constexpr bool is_tempo_wrapper_template<UnsupportedCallable> = true;
 
-} // namespace detail
+} // namespace detail::wrapper
 
 // TMP is cleaner since C++20.
 //
@@ -901,14 +858,14 @@ inline constexpr bool is_tempo_wrapper_template<UnsupportedCallable> = true;
 template <typename WrapperType>
 struct Profiler{
 
-    static_assert(detail::TempoWrapper<WrapperType> ||
-                  detail::is_tempo_wrapper_template<WrapperType>,
+    static_assert(detail::wrapper::TempoWrapper<WrapperType> ||
+                  detail::wrapper::is_tempo_wrapper_template<WrapperType>,
         "tempo::Profiler: this is not a tempo wrapper type.\n"
         TEMPO_NOT_A_WRAPPER_MESSAGE);
 
     // Falls back to the stand-in when the assert above fires, so that one
     // message is not followed by "no type named ReturnType".
-    using CallableType = typename detail::WrapperOrStandIn<WrapperType>::Type;
+    using CallableType = typename detail::wrapper::WrapperOrStandIn<WrapperType>::Type;
     using ReturnType = typename CallableType::ReturnType;
     using ArgsType = typename CallableType::ArgsType;
 
@@ -993,14 +950,12 @@ private:
     };
 };
 
-// The old name is kept so TEMPO_CALLABLE_PROFILER and existing code still work.
-// Deliberately unconstrained: Callable already carries a static_assert that says
-// what a wrong template argument should have been, and a constraint here would
-// pre-empt it with "constraints not satisfied" and nothing else.
+
 template <auto CallableValue>
 using CallableProfiler = Profiler<Callable<CallableValue>>;
 //-------------------------------------------------------------------
-namespace detail {
+// Which operator() Metrics puts on its front.
+namespace detail::call {
 
 // The two shapes of operator() that Metrics can expose. Which one you get
 // depends on whether the wrapped callable is a member function, and the choice
@@ -1080,40 +1035,29 @@ using CallOperator = std::conditional_t<
     VariadicCall<Derived, CallableType>,
     FixedSignatureCall<Derived, CallableType, typename CallableType::ArgsType>>;
 
-} // namespace detail
+} // namespace detail::call
 
-// The measuring side does NOT delegate to Profiler. Profiler writes five lines on
-// every call; if Metrics went through it, that I/O would land inside the
-// measurement window and a single call's "duration" would start with a few
-// microseconds of cout cost. The only thing timed here is the call itself;
-// reporting happens after the clock has stopped.
+
 template <typename WrapperType>
-struct Metrics : detail::CallOperator<Metrics<WrapperType>,
-                                      typename detail::WrapperOrStandIn<WrapperType>::Type> {
+struct Metrics : detail::call::CallOperator<Metrics<WrapperType>,
+                                      typename detail::wrapper::WrapperOrStandIn<WrapperType>::Type> {
 
-    static_assert(detail::TempoWrapper<WrapperType> ||
-                  detail::is_tempo_wrapper_template<WrapperType>,
+    static_assert(detail::wrapper::TempoWrapper<WrapperType> ||
+                  detail::wrapper::is_tempo_wrapper_template<WrapperType>,
         "tempo::Metrics: this is not a tempo wrapper type.\n"
         TEMPO_NOT_A_WRAPPER_MESSAGE);
 
-    // The stand-in stands in when the assert above fires. It has to be chosen
-    // here AND in the base clause above, because the base is formed before the
-    // body is looked at -- reading ::is_member off a non-wrapper there would
-    // fail before the assert could speak.
-    using CallableType = typename detail::WrapperOrStandIn<WrapperType>::Type;
+
+    using CallableType = typename detail::wrapper::WrapperOrStandIn<WrapperType>::Type;
     using ReturnType = typename CallableType::ReturnType;
     using ArgsType   = typename CallableType::ArgsType;
     using SourceLocation = std::source_location;
 
     // Metrics declares no operator() of its own -- it inherits exactly one, so
-    // there is never an overload to resolve between. See detail::CallOperator.
-    using CallOperatorBase = detail::CallOperator<Metrics<WrapperType>, CallableType>;
+    // there is never an overload to resolve between. See detail::call::CallOperator.
+    using CallOperatorBase = detail::call::CallOperator<Metrics<WrapperType>, CallableType>;
     using CallOperatorBase::operator();
-    // steady_clock, NOT high_resolution_clock. On libstdc++ high_resolution_clock
-    // is an alias for system_clock (is_steady == false): if the wall clock is
-    // stepped backwards by NTP, the difference between two Clock::now() calls
-    // comes out negative or nonsensical. The only correct clock for measuring
-    // durations is a monotonic one.
+
     using Clock = std::chrono::steady_clock;
     static_assert(Clock::is_steady, "tempo requires a monotonic clock to measure durations");
     using Duration = std::chrono::duration<double, std::milli>;
@@ -1122,38 +1066,26 @@ struct Metrics : detail::CallOperator<Metrics<WrapperType>,
     // this wrapper does too.
     static constexpr bool is_noexcept = CallableType::is_noexcept;
 
-    // Argument capture is off when any parameter cannot be stored -- and, for a
-    // noexcept callable, also when storing it could throw. The wrapper's
-    // noexcept is a promise made to its callers, and the copy tempo takes to
-    // record a call is the one allocation it would be broken by; a std::string
-    // parameter on a noexcept function is the ordinary case. Timing, counts and
-    // the report are unaffected either way. See ArgsAreNothrowStorable.
+
     static constexpr bool tracks_args =
-        detail::ArgsAreStorable<ArgsType>::value &&
-        (!is_noexcept || detail::ArgsAreNothrowStorable<ArgsType>::value);
+        detail::storage::ArgsAreStorable<ArgsType>::value &&
+        (!is_noexcept || detail::storage::ArgsAreNothrowStorable<ArgsType>::value);
 
     // The signature with its references stripped: storable and assignable.
     using StoredArgsType = std::conditional_t<
         tracks_args,
-        typename detail::DecayedTuple<ArgsType>::Type,
+        typename detail::storage::DecayedTuple<ArgsType>::Type,
         std::tuple<>>;
 
     // call_count is atomic and lives on the wrapper, so it can be read directly.
     inline static auto& call_count = CallableType::call_count;
 
 private:
-    // The collected statistics are private: all of them are guarded by
-    // stats_mutex and are read from outside only through snapshot(), as one
-    // consistent whole. Putting an atomic counter next to unsynchronized totals
-    // would advertise a guarantee that does not exist.
+
     inline static std::mutex stats_mutex;
     inline static bool has_samples = false;
 
-    // Outermost calls only -- the ones total/min/max actually describe. Without
-    // recursion this equals call_count. With it, call_count counts every level
-    // while only the outermost is timed, so dividing total by call_count would
-    // report an average per recursive step against a total that never included
-    // them. This is the denominator the average needs.
+
     inline static CallCount timed_calls = 0;
 
     inline static Duration total_duration{0};
@@ -1164,16 +1096,10 @@ private:
     inline static SourceLocation last_call_location{};
     inline static unsigned int max_depth = 0;
 
-    // Recursion depth, per thread: two threads recursing independently each have
-    // their own notion of "outermost". Untouched by the mutex on purpose -- it is
-    // read and written on every single call, including the deep interior of a
-    // recursion, and taking a lock there would cost more than everything we are
-    // trying to measure.
+
     inline static thread_local unsigned int depth = 0;
 
-    // The deepest this thread has gone within the current outermost call. Merged
-    // into the shared max_depth once, when that outermost call returns, so the
-    // interior of a recursion never touches the lock.
+
     inline static thread_local unsigned int peak_depth = 0;
 
     // Returns true when this call is the outermost one. Called before the clock
@@ -1275,10 +1201,10 @@ public:
     // that to be thread-safe.
     static void ensure_registered() {
         static const bool once = [] {
-            detail::add_to_registry(
+            detail::reporting::add_to_registry(
                 [] {
                     const Snapshot state = snapshot();
-                    return detail::ReportRow{std::string{detail::type_name<CallableType>()},
+                    return detail::reporting::ReportRow{std::string{detail::reporting::type_name<CallableType>()},
                                              state.calls,
                                              state.total_duration.count(),
                                              state.min_duration.count(),
@@ -1293,16 +1219,7 @@ public:
         (void)once;
     }
 
-    // noexcept follows the callable. Nothing on this path throws when it does:
-    // the argument snapshot is restricted to nothrow-storable types (see
-    // tracks_args), and the recording that takes the lock happens in
-    // RecordOnExit's destructor, which is noexcept already and always was.
-    //
-    // One residual path is worth naming rather than hiding: ensure_registered()
-    // allocates, once, on the first call, and an allocation failure there
-    // terminates instead of unwinding. That is the same thing any noexcept
-    // function does when it runs out of memory, and it is the price of the
-    // aggregated report knowing about a metric without being told.
+
     ReturnType call_at(SourceLocation location, auto&&... args) const
         noexcept(is_noexcept)
         requires std::invocable<const CallableType&, decltype(args)...>
@@ -1314,11 +1231,6 @@ public:
         // moved-from values.
         StoredArgsType snapshot = make_args_snapshot(args...);
 
-        // The clock starts as the guard is constructed and stops on the FIRST line
-        // of its destructor; in between there is nothing but the call itself.
-        // Reporting happens after the clock has stopped. Since the return value
-        // never passes through a named local it is never copied, so even
-        // non-movable types get through.
         [[maybe_unused]] const RecordOnExit record{location, snapshot};
         return callable(std::forward<decltype(args)>(args)...);
     }
