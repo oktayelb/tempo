@@ -200,18 +200,19 @@ so an existing recursive function keeps measuring its base call only.
 cd examples && make run
 ```
 
+One use case per file, kept short. The exhaustive version of each — every edge
+case, proved rather than shown — is in `tests/`.
+
 | | |
 |---|---|
-| `01_traits.cpp` | signature introspection, all at compile time |
-| `02_callables.cpp` | one abstraction over free functions and methods |
-| `03_forwarding.cpp` | proof that the wrapper adds no copies |
-| `04_metrics.cpp` | timings plus the arguments that produced them |
-| `05_constructors.cpp` | counting object construction |
-| `06_worst_input.cpp` | finding the input that made a function slow |
-| `07_lambdas.cpp` | lambdas, functors and `std::function` |
-| `08_report.cpp` | aggregated summary, quiet mode, threads |
-| `09_instrument.cpp` | instrument once, call sites unchanged |
-| `10_recursion.cpp` | counting recursive calls, and the depth gate |
+| `01_counting.cpp` | counting calls to a function or a method |
+| `02_timing.cpp` | timings, and the argument values of the slowest call |
+| `03_lambdas.cpp` | lambdas and functors, through the factories |
+| `04_instrument.cpp` | instrument once, call sites unchanged |
+| `05_report.cpp` | one sorted summary of everything that ran |
+| `06_recursion.cpp` | counting recursive calls, and the depth gate |
+| `07_constructors.cpp` | counting object construction |
+| `08_traits.cpp` | reading a signature at compile time |
 
 ## Tests
 

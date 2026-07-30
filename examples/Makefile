@@ -45,7 +45,7 @@ matrix:
 
 # The examples are ordinary programs using tempo, so there is no reason they
 # should be the one thing nothing checks for undefined behaviour. This is not
-# hypothetical: the busy-wait loops in 07 and 08 overflowed a signed int for as
+# hypothetical: the busy-wait loops in 03 and 05 overflowed a signed int for as
 # long as the sanitizers ran over tests/ only.
 sanitize:
 	@$(MAKE) --no-print-directory clean >/dev/null
