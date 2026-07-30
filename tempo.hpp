@@ -139,8 +139,6 @@ namespace detail {
 template <typename...>
 inline constexpr bool always_false = false;
 
-// The same thing for a non-type template argument, so an assert can depend on a
-// function pointer rather than a type.
 template <auto...>
 inline constexpr bool always_false_value = false;
 
@@ -149,24 +147,15 @@ struct UnsupportedArg {
     UnsupportedArg() = delete;
 };
 
-// A return type that converts both to and from anything.
-//
-// The failing wrapper still has to return SOMETHING, and whatever the user wrote
-// at the call site has to keep type-checking -- otherwise "int x = f(1);" adds
-// "cannot convert" and "return f(1);" adds "void value not ignored as it ought
-// to be", both underneath the message we actually wanted them to read.
+
 struct UnsupportedReturn {
     UnsupportedReturn() = default;
 
-    // From anything. Constrained away from UnsupportedReturn itself so that it
-    // does not hide the copy constructor.
+
     template <typename T>
         requires (!std::same_as<std::decay_t<T>, UnsupportedReturn>)
-    UnsupportedReturn(T&&) {}
 
-    // To anything. Declared and never defined on purpose: it exists only to
-    // satisfy the type checker, and a translation unit that instantiates it has
-    // already failed, so it never reaches the linker.
+    UnsupportedReturn(T&&) {}
     template <typename T>
     operator T() const;
 };
@@ -176,25 +165,17 @@ struct UnsupportedCallable {
     using ArgsType   = std::tuple<UnsupportedArg>;
     using ClassType  = void;
 
-    // is_member is true so that Metrics routes to the unconstrained variadic
-    // call operator below rather than to a fixed signature. A fixed signature
-    // would reject the user's actual call arguments and add a second error on
-    // top of the one we are trying to deliver.
+
     static constexpr bool is_member = true;
     static constexpr bool is_const_member = false;
     static constexpr bool is_functor = false;
     static constexpr bool is_const_callable = true;
-    // False so the stand-in's call operators stay unqualified. A noexcept
-    // wrapper around a callable that does not exist would only add "call to
-    // non-noexcept function" underneath the message we are trying to deliver.
     static constexpr bool is_noexcept = false;
     static constexpr std::size_t arg_count = 0;
     static constexpr std::size_t total_arg_size = 0;
 
     inline static std::atomic<CallCount> call_count{0};
 
-    // Accepts anything and returns something that converts to anything, so no
-    // call site produces a follow-up error.
     template <typename... CallArgs>
     UnsupportedReturn operator()(CallArgs&&...) const { return {}; }
 };
@@ -209,8 +190,7 @@ struct UnsupportedCallable {
     "  Fix: wrap the calls you want measured in a lambda --\n"                      \
     "      auto m = tempo::measure([]{ return my_printf_like(3, 10, 20, 30); });"
 
-// The signature stand-in, for the same reason: Functor reads ReturnType,
-// ArgsType, is_const and total_arg_size off it.
+
 struct UnsupportedSignature {
     using ReturnType = UnsupportedReturn;
     using ArgsType   = std::tuple<UnsupportedArg>;
@@ -221,12 +201,9 @@ struct UnsupportedSignature {
 
 } // namespace detail
 
-// The machinery behind tempo::report(), which is defined directly below.
 namespace detail::reporting {
 
-// Scrapes the type name out of __PRETTY_FUNCTION__, so the summary table shows a
-// readable name like "Callable<fibonacci>". typeid(...).name() would be mangled
-// and unreadable.
+
 template <typename T>
 constexpr std::string_view type_name() {
 #if defined(__clang__)
@@ -248,9 +225,7 @@ constexpr std::string_view type_name() {
     return text.substr(begin, end - begin);
 }
 
-// The registry behind aggregated reporting. On its first call, every Metrics
-// instantiation drops a function here that fetches its own row; tempo::report()
-// collects them all and prints one sorted table.
+
 struct ReportRow {
     std::string name;
     CallCount calls = 0;
@@ -261,8 +236,7 @@ struct ReportRow {
     unsigned int max_depth = 0;
     CallCount timed_calls = 0;
 
-    // Divided by outermost calls, not by every recursive level. See
-    // Metrics::timed_calls.
+
     double average_ms() const { return timed_calls ? total_ms / timed_calls : 0.0; }
 };
 
@@ -275,8 +249,7 @@ struct Registry {
     std::vector<Resetter> resetters;
 };
 
-// A function-local static: no static initialization order problem, it is
-// constructed on first use.
+
 inline Registry& registry() {
     static Registry instance;
     return instance;
@@ -316,9 +289,7 @@ inline void report(std::ostream& out = std::cout) {
     for (const auto& row : rows) { width = std::max(width, row.name.size()); }
     width = std::min<std::size_t>(width, 60);
 
-    // The depth column appears only when something actually recursed through a
-    // wrapper. A program without recursion prints exactly the table it always
-    // printed.
+
     const bool show_depth = std::ranges::any_of(
         rows, [](const detail::reporting::ReportRow& row) { return row.max_depth > 1; });
     const std::size_t rule = width + 56 + (show_depth ? 8 : 0);
@@ -979,18 +950,13 @@ public:
         return last_call_location;
     }
 
-    // How deep this thread is inside the callable right now: 0 when not in it,
-    // 1 in an ordinary call, more only while recursing through the wrapper. No
-    // lock, because depth is thread_local and this thread is the only writer.
+
     static unsigned int current_depth() { return depth; }
 
-    // We hold the wrapper directly: in the Functor case the callable object
-    // itself lives here, and must not be reconstructed on every call.
+
     CallableType callable;
 
-    // Note: we deliberately do NOT forward here. The arguments will be forwarded
-    // to the real call and may be left moved-from by it, so we take the snapshot
-    // BEFORE the call and by copy, to make sure the values we store are correct.
+
     static StoredArgsType make_args_snapshot(const auto&... args) {
         if constexpr (!tracks_args) {
             return StoredArgsType{};
@@ -1015,14 +981,10 @@ public:
         max_args = StoredArgsType{};
         last_call_location = SourceLocation{};
         max_depth = 0;
-        // depth itself is deliberately NOT reset: it belongs to whichever call is
-        // on the stack right now, and zeroing it mid-recursion would make the
-        // next inner call look outermost and restart the clock.
+
     }
 
-    // Registers this instantiation with the aggregated report. Thanks to the
-    // function-local static it runs exactly once, and C++ already guarantees
-    // that to be thread-safe.
+
     static void ensure_registered() {
         static const bool once = [] {
             detail::reporting::add_to_registry(
@@ -1050,18 +1012,14 @@ public:
     {
         ensure_registered();
 
-        // The snapshot is taken before the call (by copy), while the originals are
-        // forwarded to the real call. Forwarding to both would end up storing
-        // moved-from values.
+
         StoredArgsType snapshot = make_args_snapshot(args...);
 
         [[maybe_unused]] const RecordOnExit record{location, snapshot};
         return callable(std::forward<decltype(args)>(args)...);
     }
 
-    // The TEMPO_METRICS_CALL path's version of the same explanation. A macro call
-    // lands here rather than on the call operator, so the message has to exist in
-    // both places.
+
     ReturnType call_at(SourceLocation, auto&&... args) const
         requires (!std::invocable<const CallableType&, decltype(args)...>)
     {
@@ -1070,10 +1028,7 @@ public:
             TEMPO_BAD_CALL_ARGUMENTS_MESSAGE);
     }
 
-    // The message both accessors give when this callable's arguments are not
-    // being stored. Without it the caller gets an empty tuple and the error
-    // surfaces much later, inside <tuple>, as a page about "tuple index out of
-    // range" that never mentions tempo.
+
 #define TEMPO_ARGS_NOT_STORED_MESSAGE                                              \
     "  tempo stores a call's arguments only when EVERY parameter type is both\n"   \
     "  copy-constructible and default-constructible. At least one of this\n"        \
@@ -1132,34 +1087,23 @@ private:
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdangling-pointer"
 #endif
-            // The clock stops before anything else, and before the LOCK in
-            // particular: waiting on the lock is never added to the measurement.
+
             Duration duration{0};
             if (outermost) { duration = Clock::now() - start; }
 
-            // Must happen on every path, including while an exception unwinds,
-            // or the depth would stay raised and every later call would look
-            // like an inner one and never be timed again.
+
             --depth;
 
             if (std::uncaught_exceptions() != exceptions_on_entry) {
                 return; // the call threw, do not record a half-finished duration
             }
 
-            // An inner call contributes its count and its depth, nothing else.
-            // Timing it would sum intervals that contain one another: with
-            // fib(22) that reports about 69 ms of "work" for 4.7 ms of wall time.
+
             if (!outermost) { return; }
 
-            // One critical section covering both the update and the reporting.
-            // The report is inside the lock too, because otherwise the lines from
-            // two threads would interleave. The user's function has already
-            // returned, so the lock is not holding it.
             const std::lock_guard<std::mutex> guard{stats_mutex};
 
-            // This outermost call is finished, so the peak it reached is final.
-            // Merging here keeps the lock out of the recursion's interior;
-            // enter_depth() resets the peak for the next outermost call.
+
             if (peak_depth > max_depth) { max_depth = peak_depth; }
 
             last_call_location = location;
@@ -1185,8 +1129,7 @@ private:
             }
 
 #if TEMPO_PRINT_ENABLED
-            // Everything below runs after the clock has stopped, so it does not
-            // pollute the measurement.
+
             const auto calls = CallableType::call_count.load(std::memory_order_relaxed);
             std::cout << "[CallableMetrics] Callable ran. Took: " << duration.count() << " ms\n";
             std::cout << "[CallableMetrics] Call location: " << location.file_name() << ":" << location.line() << "\n";
@@ -1206,19 +1149,11 @@ private:
 
     };
 
-// The old name is kept so TEMPO_CALLABLE_METRICS and existing code still work.
-// Unconstrained for the same reason as CallableProfiler: the message lives in
-// Callable.
+
 template <auto CallableValue>
 using CallableMetrics = Metrics<Callable<CallableValue>>;
 
-//-------------------------------------------------------------------
-// Factories for lambdas and functors.
-//
-// For function pointers we can spell the type name with a macro
-// (TEMPO_CALLABLE_METRICS(f)), because &f is a template argument. That is not
-// possible for a lambda: we have to pass the object and pick up its type by
-// deduction.
+
 template <typename F>
 requires CallableObject<std::decay_t<F>>
 auto wrap(F&& target) {
