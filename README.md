@@ -110,11 +110,14 @@ truncated. Do not parse the report; read `snapshot()` instead.
 
 ### What CI covers
 
-GCC and Clang on Linux and Apple Clang on macOS, under every combination of the
-three macros, at C++20 and C++23, plus AddressSanitizer, UndefinedBehaviorSanitizer
-and ThreadSanitizer, over the tests and the examples alike. **MSVC is not
-covered** — the code paths for it exist and are written against the documented
-behaviour, but nothing verifies them.
+GCC and Clang on Linux, under every combination of the three macros, at C++20
+and C++23, plus AddressSanitizer, UndefinedBehaviorSanitizer and ThreadSanitizer,
+over the tests and the examples alike.
+
+**Linux is the only platform covered.** macOS and MSVC are not: the code paths
+for both exist and are written against the documented behaviour, and the macOS
+build is expected to work, but nothing verifies either. The macOS job is still
+in `.github/workflows/ci.yml`, commented out, ready to be switched back on.
 
 ## Instrumenting without touching call sites
 
