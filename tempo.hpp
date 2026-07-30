@@ -3,7 +3,6 @@
 // tempo — Copyright (c) 2026 Oktay Elibüyük
 // Released under the MIT License. See LICENSE for the full terms.
 
-// See the README: Version.
 #define TEMPO_VERSION_MAJOR 0
 #define TEMPO_VERSION_MINOR 1
 #define TEMPO_VERSION_PATCH 0
@@ -38,13 +37,10 @@
 #include <utility>
 #include <vector>
 
-// See the README: Reporting.
 #ifndef TEMPO_PRINT_ENABLED
 #define TEMPO_PRINT_ENABLED 0
 #endif
 
-// See the README: Instrumenting without touching call sites -- for this and for
-// TEMPO_INSTRUMENT below it.
 #ifndef TEMPO_ENABLED
 #define TEMPO_ENABLED 1
 #endif
@@ -55,8 +51,6 @@
 #define TEMPO_INSTRUMENT(function, alias) inline constexpr auto alias = &function
 #endif
 
-// See the README: Recursion -- for this and for everything below it, down to
-// TEMPO_SELF.
 #ifndef TEMPO_COUNT_RECURSION
 #define TEMPO_COUNT_RECURSION 0
 #endif
@@ -88,8 +82,6 @@ using CallCount =  std::uint64_t;
 
 namespace callable_traits {
 
-//Value type name değil, fonksiyonlar ve metodların ta kendisi, 
-//bunları Fonksiyon classının valueları gibi düşünebiliriz
 template <auto Value>
 concept FunctionPointer =
     std::is_pointer_v<decltype(Value)> &&
@@ -320,7 +312,6 @@ inline void add_metric(RowFetcher fetcher, Resetter resetter) {
     reg.resetters.push_back(resetter);
 }
 
-// A summary of every registered metric: one table, sorted by total time.
 inline void print(std::ostream& out = std::cout) {
     std::vector<Row> rows;
     {
@@ -377,14 +368,12 @@ inline void print(std::ostream& out = std::cout) {
     out << std::string(rule, '=') << "\n";
 }
 
-// Resets every registered metric.
 inline void reset_all() {
     Registry& reg = registry();
     const std::lock_guard<std::mutex> guard{reg.mutex};
     for (const Resetter reset : reg.resetters) { reset(); }
 }
 
-// For those who want the summary printed automatically when the program ends.
 inline void at_exit(std::ostream& out = std::cout) {
     struct AtExit {
         std::ostream* stream;
@@ -461,8 +450,6 @@ struct FunctorSignature<F> {
 
 } // namespace signature
 
-// Is a type one of tempo's own wrapper types, and what to fall back on when it
-// is not. This is the guard on the front door of Metrics and Profiler.
 namespace wrapper {
 
 
@@ -551,8 +538,6 @@ struct MethodBody {
     static constexpr auto total_arg_size = (sizeof(args) +  ... +  0);
     inline static std::atomic<CallCount> call_count{0};
 
-    // The instance is forwarded too: thanks to std::invoke, ClassName&,
-    // ClassName*, std::reference_wrapper and smart pointers all work.
     template <typename Self, typename... CallArgs>
         requires std::invocable<decltype(method), Self, CallArgs...>
     ReturnType operator()(Self&& self, CallArgs&&... call_args) const noexcept(Noexcept) {
@@ -561,8 +546,6 @@ struct MethodBody {
     }
 };
 
-// The primary is the failure case: a ref-qualified, volatile or C-style variadic
-// member function, none of which match a specialization below.
 template <typename Signature, auto method>
 struct MethodImpl : diagnostics::UnsupportedCallable {
     static_assert(diagnostics::always_false_value<method>,
@@ -651,25 +634,16 @@ struct Functor {
     using ArgsType   = typename SignatureType::ArgsType;
     using ClassType  = F;
 
-    // is_member is false because the caller does not pass the instance
-    // separately; the object lives inside the wrapper.
     static constexpr bool is_member = false;
     static constexpr bool is_const_member = false;
     static constexpr bool is_functor = true;
     static constexpr bool is_const_callable = SignatureType::is_const;
-    // Read off operator(), so a lambda declared [](int) noexcept {...} gets a
-    // noexcept wrapper exactly as a noexcept function does.
     static constexpr bool is_noexcept = SignatureType::is_noexcept;
     static constexpr auto arg_count = std::tuple_size_v<ArgsType>;
     static constexpr auto total_arg_size = SignatureType::total_arg_size;
 
-    // The counter is tied to the type. Since every lambda EXPRESSION produces its
-    // own unique closure type, this means a separate counter per lambda. Two
-    // objects of the same type (two std::function<int(int)>, say) SHARE a counter.
     inline static std::atomic<CallCount> call_count{0};
 
-    // mutable: the operator() of a mutable lambda is not const, but the Profiler
-    // and Metrics chain calls through a const path.
     mutable F target;
 
     template <typename... CallArgs>
@@ -711,10 +685,6 @@ inline constexpr bool is_tempo_wrapper_template<diagnostics::UnsupportedCallable
 
 } // namespace wrapper
 
-// TMP is cleaner since C++20.
-//
-// Templated on the wrapper type (Callable<&f> or Functor<Lambda>), not on an
-// NTTP: a lambda cannot be a template argument, but its type can.
 template <typename WrapperType>
 struct Profiler{
 
@@ -742,8 +712,6 @@ struct Profiler{
     CallableType callable;
 
 
-    // Whether the wrapped callable promised not to throw, and therefore whether
-    // this wrapper does too.
     static constexpr bool is_noexcept = CallableType::is_noexcept;
 
 
@@ -762,9 +730,7 @@ struct Profiler{
 #endif
         }
 
-        // The post-call work happens in a destructor, which lets us return the
-        // call expression directly. Because there is no named local variable, the
-        // return value is never copied or moved (guaranteed copy elision).
+        // Keep post-call work in a destructor so the call expression returns directly.
         [[maybe_unused]] const ReportOnExit report{};
         return callable(std::forward<decltype(args)>(args)...);
     }
@@ -776,8 +742,6 @@ struct Profiler{
         return call_at(SourceLocation::current(), std::forward<decltype(args)>(args)...);
     }
 
-    // As in Metrics: selected only when the call above is not viable, purely to
-    // say what was wrong with the arguments.
     ReturnType operator()(auto&&... args) const
         requires (!std::invocable<const CallableType&, decltype(args)...>)
     {
@@ -805,8 +769,6 @@ private:
 
 template <auto CallableValue>
 using CallableProfiler = Profiler<Callable<CallableValue>>;
-//-------------------------------------------------------------------
-// Which operator() Metrics puts on its front.
 namespace call_operators {
 
 
@@ -871,8 +833,6 @@ struct Metrics : call_operators::CallOperator<Metrics<WrapperType>,
     using ArgsType   = typename CallableType::ArgsType;
     using SourceLocation = std::source_location;
 
-    // Metrics declares no operator() of its own -- it inherits exactly one, so
-    // there is never an overload to resolve between. See call_operators::CallOperator.
     using CallOperatorBase = call_operators::CallOperator<Metrics<WrapperType>, CallableType>;
     using CallOperatorBase::operator();
 
@@ -880,8 +840,6 @@ struct Metrics : call_operators::CallOperator<Metrics<WrapperType>,
     static_assert(Clock::is_steady, "tempo requires a monotonic clock to measure durations");
     using Duration = std::chrono::duration<double, std::milli>;
 
-    // Whether the wrapped callable promised not to throw, and therefore whether
-    // this wrapper does too.
     static constexpr bool is_noexcept = CallableType::is_noexcept;
 
 
@@ -889,13 +847,11 @@ struct Metrics : call_operators::CallOperator<Metrics<WrapperType>,
         storage::ArgsAreStorable<ArgsType>::value &&
         (!is_noexcept || storage::ArgsAreNothrowStorable<ArgsType>::value);
 
-    // The signature with its references stripped: storable and assignable.
     using StoredArgsType = std::conditional_t<
         tracks_args,
         typename storage::DecayedTuple<ArgsType>::Type,
         std::tuple<>>;
 
-    // call_count is atomic and lives on the wrapper, so it can be read directly.
     inline static auto& call_count = CallableType::call_count;
 
 private:
@@ -920,22 +876,16 @@ private:
 
     inline static thread_local unsigned int peak_depth = 0;
 
-    // Returns true when this call is the outermost one. Called before the clock
-    // starts, so the bookkeeping is never part of a measurement.
     static bool enter_depth() {
         const unsigned int current = ++depth;
-        // Resetting on the way in rather than on the way out keeps this correct
-        // when a call throws: the unwinding path never reaches the merge, so a
-        // stale peak would otherwise be credited to the next call.
+        // Reset on entry so an unwound recursive call cannot leak its peak.
         if (current == 1) { peak_depth = 1; }
         else if (current > peak_depth) { peak_depth = current; }
         return current == 1;
     }
 
 public:
-    // A consistent view taken in one go. Reading the total and the min separately
-    // would not just be a data race, it would be INCONSISTENT: one could reflect
-    // the state before an update and the other the state after it.
+    // One locked view, so totals, extremes and arguments describe the same state.
     struct Snapshot {
         CallCount calls = 0;
         Duration total_duration{0};
@@ -946,15 +896,10 @@ public:
         SourceLocation last_call_location{};
         bool has_samples = false;
 
-        // Deepest recursion reached. 1 for an ordinary function, 0 before the
-        // first call. Only ever above 1 when recursion goes through the wrapper,
-        // i.e. TEMPO_SELF with TEMPO_COUNT_RECURSION=1.
         unsigned int max_depth = 0;
 
-        // Outermost calls. Equals calls unless recursion is being counted.
         CallCount timed_calls = 0;
 
-        // Time per outermost call, which is what total_duration measures.
         double average_ms() const {
             return timed_calls ? total_duration.count() / timed_calls : 0.0;
         }
@@ -1077,14 +1022,9 @@ private:
         StoredArgsType& snapshot;
         int exceptions_on_entry = std::uncaught_exceptions();
 
-        // Depth is taken before the clock starts, so the bookkeeping is outside
-        // every measurement. For a non-recursive function this is always true and
-        // nothing below behaves differently than it did before depth existed.
         bool outermost = enter_depth();
 
-        // Only the outermost call reads the clock. An inner call is counted --
-        // call_count was already incremented by the wrapper -- but never timed,
-        // so a deep recursion does not pay for two clock reads per level.
+        // Inner recursive calls are counted but not timed.
         Clock::time_point start = outermost ? Clock::now() : Clock::time_point{};
 
         ~RecordOnExit() {
@@ -1124,8 +1064,6 @@ private:
             has_samples = true;
 
             if constexpr (tracks_args) {
-                // We only move the snapshot when it is actually needed; if both
-                // fire at once, a single copy is enough.
                 if (is_new_max && is_new_min) {
                     max_args = snapshot;
                     min_args = std::move(snapshot);
@@ -1175,8 +1113,6 @@ auto profile(F&& target) {
 template <typename F>
 requires callable_traits::CallableObject<std::decay_t<F>>
 auto measure(F&& target) {
-    // The leading {} initializes the inherited call-operator base, which is
-    // empty. Metrics is still an aggregate; it just has one more subobject now.
     return Metrics<Functor<std::decay_t<F>>>{{}, wrap(std::forward<F>(target))};
 }
 
@@ -1207,8 +1143,6 @@ auto measure(F&&) {
         TEMPO_NOT_A_CALLABLE_OBJECT_MESSAGE);
     return Metrics<diagnostics::UnsupportedCallable>{{}, {}};
 }
-//-------------------------------------------------------------------
-
 namespace construction {
 
 template <typename ClassType>
@@ -1216,8 +1150,6 @@ concept Class = std::is_class_v<ClassType>;
 
 } // namespace construction
 
-// Unconstrained, so that a wrong template argument produces the message below
-// rather than "constraints not satisfied".
 template <typename ClassType>
 struct ConstructorProfiler{
 
