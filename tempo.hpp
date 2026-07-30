@@ -3,16 +3,7 @@
 // tempo — Copyright (c) 2026 Oktay Elibüyük
 // Released under the MIT License. See LICENSE for the full terms.
 
-// tempo's version, as three numbers and as one comparable integer. The single
-// integer is the one to test against, since it orders correctly across all
-// three fields:
-//
-//     #if !defined(TEMPO_VERSION) || TEMPO_VERSION < 10000
-//     #error "this code needs tempo 1.0.0 or newer"
-//     #endif
-//
-// Major stays at 0 while the API is still free to change; a program that
-// vendors the header can pin the exact revision it was written against.
+// See the README: Version.
 #define TEMPO_VERSION_MAJOR 0
 #define TEMPO_VERSION_MINOR 1
 #define TEMPO_VERSION_PATCH 0
@@ -47,81 +38,31 @@
 #include <utility>
 #include <vector>
 
-// Print a block of lines on every single call? Off by default: a profiler that
-// writes eight lines to cout per call -- while holding the lock, at that -- is
-// unusable on anything called often, and the aggregated tempo::report() says the
-// same things better. Statistics are collected either way; this switch only
-// decides whether each call narrates itself.
-//
-// Set it to 1 to get the per-call trace back, which is genuinely the clearer
-// view when you are watching a handful of calls. Define it BEFORE the include.
+// See the README: Reporting.
 #ifndef TEMPO_PRINT_ENABLED
 #define TEMPO_PRINT_ENABLED 0
 #endif
 
-// Master switch for TEMPO_INSTRUMENT. Define it as 0 in release builds and every
-// instrumented name collapses to a plain function pointer, which the optimizer
-// inlines away to nothing. Define it BEFORE the include.
+// See the README: Instrumenting without touching call sites -- for this and for
+// TEMPO_INSTRUMENT below it.
 #ifndef TEMPO_ENABLED
 #define TEMPO_ENABLED 1
 #endif
 
-// Instrument a function once, at its declaration, and leave every call site
-// alone.
-//
-//     namespace impl { int fibonacci(unsigned n); }
-//     TEMPO_INSTRUMENT(impl::fibonacci, fibonacci);
-//
-//     fibonacci(26);   // unchanged: resolves to the wrapper's operator()
-//
-// A variable and a function cannot share a name in one scope, but they can
-// across scopes -- so the function lives in a nested namespace and the wrapper
-// takes its name outside. Because the wrapper's operator() carries a defaulted
-// source_location (see detail::call::FixedSignatureCall), the call site is still
-// recorded even though nothing at the call site changed.
-//
-// Member functions cannot use this: service.handle(...) offers no free name for
-// a wrapper to shadow. Use TEMPO_CALLABLE_METRICS and an explicit call for those.
 #if TEMPO_ENABLED
 #define TEMPO_INSTRUMENT(function, alias) inline ::tempo::CallableMetrics<&function> alias{}
 #else
 #define TEMPO_INSTRUMENT(function, alias) inline constexpr auto alias = &function
 #endif
 
-// Should recursive calls be measured too? Off by default, and deliberately so: a
-// recursive call that goes through the wrapper pays the full per-call cost, which
-// on a hot recursion is a large multiple of the work itself. Leave it off to
-// measure the top-level call; switch it on to answer "how many times does this
-// actually run". Define it BEFORE the include.
+// See the README: Recursion -- for this and for everything below it, down to
+// TEMPO_SELF.
 #ifndef TEMPO_COUNT_RECURSION
 #define TEMPO_COUNT_RECURSION 0
 #endif
 
-// The real function behind a TEMPO_RECURSIVE definition. The wrapper takes the
-// plain name, so the function itself needs a different one.
 #define TEMPO_TARGET(name) name##_tempo_target
 
-// Define a recursive function and instrument it in one go:
-//
-//     TEMPO_RECURSIVE(int, fibonacci, unsigned n) {
-//         return n < 2 ? n : TEMPO_SELF(fibonacci)(n-1) + TEMPO_SELF(fibonacci)(n-2);
-//     }
-//
-//     fibonacci(26);   // call sites are ordinary, exactly as with TEMPO_INSTRUMENT
-//
-// The macro declares the real function under a suffixed name, points a wrapper
-// at it under the plain name, and then opens the real definition -- so the body
-// you write follows the macro directly. TEMPO_SELF picks which of the two a
-// recursive call reaches, and that is the whole switch:
-//
-//   TEMPO_COUNT_RECURSION=0  -> the real function: no wrapper, no cost, and only
-//                               the outermost call is counted, exactly as if the
-//                               body had simply called itself.
-//   TEMPO_COUNT_RECURSION=1  -> the wrapper: every recursive call is counted.
-//
-// Timing stays correct either way, because Metrics times only the outermost call
-// (see the depth gate in RecordOnExit). A return type containing a comma has to
-// be hidden behind a type alias first -- the preprocessor would split it.
 #define TEMPO_RECURSIVE(returns, name, ...)                 \
     inline returns TEMPO_TARGET(name)(__VA_ARGS__);         \
     TEMPO_INSTRUMENT(TEMPO_TARGET(name), name);             \
@@ -158,15 +99,10 @@ concept MethodPointer = std::is_member_function_pointer_v<decltype(Value)>;
 template <auto Value>
 concept CallablePointer = FunctionPointer<Value> || MethodPointer<Value>;
 
-// Which parameter lists tempo can keep a copy of.
-//
-// Metrics remembers the arguments of the fastest and the slowest call it has
-// seen. Whether it can do that at all is decided here, from the parameter list
-// alone, and the verdict surfaces as Metrics::tracks_args.
+
 namespace detail::storage {
 
-// To store arguments we strip the references off the signature:
-// std::tuple<const T&> is neither default constructible nor reassignable.
+
 template <typename Tuple>
 struct DecayedTuple;
 
@@ -175,9 +111,7 @@ struct DecayedTuple<std::tuple<Ts...>> {
     using Type = std::tuple<std::decay_t<Ts>...>;
 };
 
-// We can only store arguments that are copy constructible and default
-// constructible. For move-only arguments (unique_ptr and friends) storage is
-// silently switched off.
+
 template <typename Tuple>
 struct ArgsAreStorable;
 
@@ -186,18 +120,7 @@ struct ArgsAreStorable<std::tuple<Ts...>>
     : std::bool_constant<(std::copy_constructible<std::decay_t<Ts>> && ...) &&
                          (std::default_initializable<std::decay_t<Ts>> && ...)> {};
 
-// The same question for a noexcept callable, where the answer has to be
-// stronger.
-//
-// Capturing an argument means copying it, and a copy that allocates can throw --
-// inside a wrapper that has just promised its callers it will not. tempo will
-// not turn a noexcept function into one that terminates on a full heap, so for
-// those callables capture is restricted to argument types it can copy, store and
-// overwrite without throwing. Everything else switches capture off, exactly as
-// a move-only parameter already does, and says so through tracks_args.
-//
-// Assignment is in the list because the stored tuple is overwritten in place
-// every time a new extreme is seen, not just constructed once.
+
 template <typename Tuple>
 struct ArgsAreNothrowStorable;
 
@@ -211,14 +134,7 @@ struct ArgsAreNothrowStorable<std::tuple<Ts...>>
 
 } // namespace detail::storage
 
-// The shared vocabulary: the pieces every other block below reaches for.
-//
-// This one keeps the bare "detail" name deliberately. always_false and the
-// Unsupported* stand-ins are used from five of the six nested namespaces below
-// and from the public templates as well, and a nested namespace can see its
-// enclosing one without qualification -- so leaving them here is what lets the
-// blocks below stay clean. It is also what keeps them short in compiler output,
-// where detail::UnsupportedCallable is a name users actually read.
+
 namespace detail {
 template <typename...>
 inline constexpr bool always_false = false;
@@ -283,24 +199,7 @@ struct UnsupportedCallable {
     UnsupportedReturn operator()(CallArgs&&...) const { return {}; }
 };
 
-// The two qualifiers that used to need detecting by hand, and no longer do.
-//
-// noexcept is now SUPPORTED: the qualifier is read off the callable and
-// reapplied to every operator() and call_at on the way out, so the type a caller
-// sees keeps the guarantee it had. What that costs is argument capture for
-// parameter types whose copy can throw -- see ArgsAreNothrowStorable, and
-// tracks_args, which reports it.
-//
-// A C-style variadic function is still rejected, but it no longer needs a trait
-// of its own to catch it. It used to: deduction against ret(*)(args...) SUCCEEDS
-// for int(*)(int, ...) with args = {int}, the ellipsis simply dropped, and the
-// wrapper would silently have become a one-parameter function. Matching on the
-// function type instead of the pointer value (see detail::FunctionImpl) removes
-// that conversion entirely -- int(int, ...) is not int(int) and matches no
-// specialization -- so the shape lands on the primary and is reported there.
-//
-// The one combination still rejected is a noexcept C-style variadic function,
-// and it is rejected for the ellipsis, not for the noexcept.
+
 
 #define TEMPO_C_VARIADIC_MESSAGE                                                   \
     "  A function declared with a trailing '...' (printf-like) cannot be wrapped\n"\
@@ -468,25 +367,12 @@ inline void report_at_exit(std::ostream& out = std::cout) {
     (void)guard;
 }
 
-// A callable object: lambda, functor, std::function. The type-domain counterpart
-// of CallablePointer -- between them they are everything tempo can measure.
-//
-// It needs a single, non-template operator() -- generic lambdas ([](auto x){...})
-// and functors with an overloaded operator() are rejected here, because they have
-// no signature until they are called. The rejection is not silent: you get a
-// constraint-not-satisfied error.
+
 template <typename F>
 concept CallableObject =
     std::is_class_v<F> &&
     requires { &F::operator(); };
 
-// Reading a callable object's signature.
-//
-// A lambda or functor carries its signature on its operator(), so both templates
-// here are about getting at it: MemberSignature decomposes the member pointer,
-// FunctorSignature is what hands it that pointer. Member FUNCTIONS wrapped
-// through TEMPO_METHOD do not come through here at all -- they are decomposed by
-// detail::MethodImpl further down.
 namespace detail::signature {
 
 template <typename MemberPointer>
@@ -537,10 +423,7 @@ struct MemberSignature<ret (Owner::*)(args...) const noexcept> {
     static constexpr auto total_arg_size = (sizeof(args) + ... + 0);
 };
 
-// Reads a callable object's signature off its operator(). The unconstrained
-// primary is the failure case -- F has no single operator() to take the address
-// of -- and yields the stand-in, so Functor can report the problem itself rather
-// than dying on "&F::operator()" halfway through its own body.
+
 template <typename F>
 struct FunctorSignature {
     using Type = UnsupportedSignature;
@@ -558,10 +441,7 @@ struct FunctorSignature<F> {
 // is not. This is the guard on the front door of Metrics and Profiler.
 namespace detail::wrapper {
 
-// What Metrics and Profiler need from whatever they are told to wrap. Used to
-// catch tempo::Metrics<MyLambda>, which should have been tempo::measure(lambda):
-// without this the class would die reading ::ReturnType off a type that has
-// none, before its own static_assert could be reached.
+
 template <typename W>
 concept TempoWrapper = requires {
     typename W::ReturnType;
@@ -667,10 +547,7 @@ struct Function : detail::FunctionImpl<std::remove_pointer_t<decltype(Func)>, Fu
 
 namespace detail {
 
-// The member-function counterpart of FunctionBody and FunctionImpl, keyed on the
-// pointer type for the same reason -- see the comment above FunctionBody. There
-// are four shapes here rather than two, because const and noexcept are
-// independent.
+
 template <auto method, bool Noexcept, bool Const, typename ClassName, typename ret, typename... args>
 struct MethodBody {
     using ReturnType = ret;
@@ -818,21 +695,10 @@ struct Functor {
 };
 
 
-// Reopened here rather than merged with the block above, because these
-// specializations name Callable, Function, Method and Functor -- none of which
-// exist yet at that point in the file.
+
 namespace detail::wrapper {
 
-// Is W one of tempo's own wrapper templates?
-//
-// Metrics and Profiler accept this as well as TempoWrapper, because a wrapper
-// whose own static_assert has already fired may stop looking like one. Clang
-// marks a class containing a failed assert as invalid, so every later member
-// lookup on it fails too -- and Metrics would then print "this is not a tempo
-// wrapper type" underneath the message that had already explained the real
-// problem. GCC keeps the members visible and prints only the first. Checking the
-// template itself makes the two agree: if it is one of ours, the diagnosis has
-// been delivered elsewhere and there is nothing to add here.
+
 template <typename W>
 inline constexpr bool is_tempo_wrapper_template = false;
 
@@ -863,17 +729,14 @@ struct Profiler{
         "tempo::Profiler: this is not a tempo wrapper type.\n"
         TEMPO_NOT_A_WRAPPER_MESSAGE);
 
-    // Falls back to the stand-in when the assert above fires, so that one
-    // message is not followed by "no type named ReturnType".
+
     using CallableType = typename detail::wrapper::WrapperOrStandIn<WrapperType>::Type;
     using ReturnType = typename CallableType::ReturnType;
     using ArgsType = typename CallableType::ArgsType;
 
     using SourceLocation = std::source_location;
 
-    // The lock guarding shared state. It is NEVER held while the user's function
-    // runs -- it is taken only for short critical sections, so there is neither a
-    // deadlock risk nor any serialization of the code being measured.
+
     inline static std::mutex state_mutex;
     inline static SourceLocation last_call_location{};
 
@@ -889,12 +752,7 @@ struct Profiler{
     // this wrapper does too.
     static constexpr bool is_noexcept = CallableType::is_noexcept;
 
-    // noexcept follows the callable, as in Metrics. Unlike Metrics this path
-    // takes the lock BEFORE the call, to keep two threads' report lines from
-    // interleaving -- so a mutex that fails to lock terminates here rather than
-    // unwinding. That is the same lock, in the same state, that the destructor
-    // below has always taken with no way to unwind either; std::mutex::lock only
-    // throws on errors a correct program cannot produce.
+
     ReturnType call_at(SourceLocation location, auto&&... args) const
         noexcept(is_noexcept)
         requires std::invocable<const CallableType&, decltype(args)...>
@@ -957,22 +815,7 @@ using CallableProfiler = Profiler<Callable<CallableValue>>;
 // Which operator() Metrics puts on its front.
 namespace detail::call {
 
-// The two shapes of operator() that Metrics can expose. Which one you get
-// depends on whether the wrapped callable is a member function, and the choice
-// is not cosmetic -- it decides whether a bare call can capture its own call
-// site.
-//
-// Only ONE of them is ever inherited. Having both would be worse than useless:
-// for fib(26) with a parameter of type unsigned, the variadic template binds
-// int&& exactly while the fixed signature needs an int -> unsigned conversion,
-// so the template would win overload resolution and silently take the location
-// away again.
 
-// Used for member functions. The caller supplies the instance, and we keep
-// accepting every form std::invoke understands: ClassName&, ClassName*,
-// std::reference_wrapper, smart pointers. A fixed signature cannot express that,
-// and members cannot use the TEMPO_INSTRUMENT seam anyway (there is no free name
-// for a wrapper variable to shadow), so nothing is lost by staying variadic.
 template <typename Derived, typename CallableType>
 struct VariadicCall {
     typename CallableType::ReturnType operator()(auto&&... args) const
@@ -983,10 +826,7 @@ struct VariadicCall {
             std::source_location::current(), std::forward<decltype(args)>(args)...);
     }
 
-    // Selected only when the overload above is not viable, and does nothing but
-    // explain why. Without it the compiler reports "no match for call to
-    // (tempo::Metrics<...>) (Foo&, int)" and leaves the reader to work out which
-    // of the arguments was wrong.
+
     typename CallableType::ReturnType operator()(auto&&... args) const
         requires (!std::invocable<const CallableType&, decltype(args)...>)
     {
@@ -996,29 +836,13 @@ struct VariadicCall {
     }
 };
 
-// Used for free functions and callable objects: the callable's exact parameter
-// list, plus a trailing source_location that defaults to current().
-//
-// The reason this works is that Args... comes from the enclosing class template
-// and is already fixed -- it is NOT deduced from the call. That makes this an
-// ordinary function with N+1 parameters whose last one has a default argument,
-// and a default argument is evaluated AT THE CALL SITE. So a plain fib(26) now
-// records the caller's file and line, with no macro. You cannot do this with a
-// deduced pack: a default argument may not follow one.
-//
-// The price is that parameters arrive by their declared types rather than by
-// forwarding reference. For reference parameters that costs exactly nothing; for
-// a by-value parameter handed an lvalue it costs one extra move.
+
 template <typename Derived, typename CallableType, typename ArgsTuple>
 struct FixedSignatureCall;
 
 template <typename Derived, typename CallableType, typename... Args>
 struct FixedSignatureCall<Derived, CallableType, std::tuple<Args...>> {
-    // noexcept follows the callable, so an instrumented name keeps the exception
-    // specification the function it stands for had. This is what makes
-    // TEMPO_INSTRUMENT usable on a noexcept function at all: the seam works by
-    // the wrapper taking the function's name, so the wrapper's type is the type
-    // every caller now sees.
+
     typename CallableType::ReturnType operator()(
         Args... args,
         std::source_location location = std::source_location::current()) const
@@ -1303,14 +1127,7 @@ private:
         Clock::time_point start = outermost ? Clock::now() : Clock::time_point{};
 
         ~RecordOnExit() {
-// GCC 15 at -O2 reports -Wdangling-pointer for the assignments of `duration`
-// into the static min/max below, but only for instantiations whose
-// StoredArgsType is an empty tuple. It is spurious: Duration is
-// chrono::duration<double, milli>, a value with no pointer in it, copied into
-// static storage. Clang 21 at the same optimization level is silent, and the
-// warning disappears at -O0, -O1 and -O3. Suppressed here, as narrowly as the
-// diagnostic allows, because a header-only library must not emit warnings into
-// its users' builds. If a future GCC stops reporting it, delete the pragmas.
+
 #if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdangling-pointer"
@@ -1422,15 +1239,7 @@ auto measure(F&& target) {
     return Metrics<Functor<std::decay_t<F>>>{{}, wrap(std::forward<F>(target))};
 }
 
-// The three overloads below are selected only when the ones above are not
-// viable, and exist purely to say why. Without them the compiler reports
-// "no matching function for call to measure(...)" followed by a note that a
-// constraint was not satisfied, which does not tell a user what to write
-// instead.
-//
-// Each returns a stand-in of the same shape the real factory would have
-// returned, so the code that goes on to use the result -- calling it, asking it
-// for maximizers -- keeps type-checking and adds no errors of its own.
+
 template <typename F>
 requires (!CallableObject<std::decay_t<F>>)
 auto wrap(F&&) {
@@ -1478,27 +1287,10 @@ struct ConstructorProfiler{
 
     inline static std::atomic<CallCount> obj_count{0};
 
-    // A compile-time query: can ClassType be constructed from these arguments?
-    // You can ask directly from your own code with
-    // static_assert(Profiler::can_construct<int, int>).
     template <typename... Args>
     static constexpr bool can_construct = std::constructible_from<ClassType, Args...>;
 
-    // The arguments are forwarded to the constructor: movable arguments are
-    // moved, and because a prvalue is returned the object is constructed directly
-    // in the caller's storage (guaranteed copy elision) -- so non-copyable and
-    // non-movable types work too.
-    //
-    // WHEN does the counter increment? AFTER the object is constructed.
-    // "return ClassType(...)" first initializes the caller's return object, and
-    // LOCAL variables are destroyed only after that -- so the counter's
-    // destructor runs once the constructor has finished successfully. If the
-    // constructor throws, uncaught_exceptions() during unwinding differs from the
-    // value on entry and the counter never increments.
-    //
-    // Binding the object to a named local and writing "obj_count++; return obj;"
-    // would look clearer, but it would force a copy or move on the return and
-    // make non-copyable, non-movable types like the one below fail to compile.
+
     template <typename... Args>
         requires std::constructible_from<ClassType, Args...>
     ClassType operator() (Args&&... args) const {
@@ -1506,11 +1298,7 @@ struct ConstructorProfiler{
         return ClassType(std::forward<Args>(args)...);
         };
 
-    // Selected only when the overload above is NOT viable. Its sole job is to
-    // produce an error message that says what happened, instead of "no match for
-    // call". The return type is deliberately ClassType so that code writing
-    // "auto p = make(...)" does not additionally get a "deduced type void is
-    // incomplete" error -- one clear message is enough.
+
     template <typename... Args>
         requires (!std::constructible_from<ClassType, Args...>)
     ClassType operator() (Args&&...) const {

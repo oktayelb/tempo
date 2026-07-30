@@ -156,6 +156,12 @@ TEMPO_RECURSIVE(int, fibonacci, unsigned n) {
 fibonacci(24);   // an ordinary call site, as with TEMPO_INSTRUMENT
 ```
 
+The macro declares the real function under a suffixed name — `TEMPO_TARGET(fibonacci)`,
+which expands to `fibonacci_tempo_target` — points a wrapper at it under the plain
+name, and then opens the real definition, which is why the body you write follows
+the macro directly. You never need to write `TEMPO_TARGET` yourself; it is the
+name `TEMPO_SELF` resolves to when recursion counting is off.
+
 `TEMPO_SELF` is the whole switch. With `TEMPO_COUNT_RECURSION` at its default of
 `0` it names the real function, so recursion costs nothing and only the outermost
 call is counted — exactly what an untouched recursive function does. Set it to
