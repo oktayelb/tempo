@@ -142,23 +142,11 @@
 #define TEMPO_METRICS_CALL(metrics, ...) (metrics).call_at(::std::source_location::current() __VA_OPT__(,) __VA_ARGS__)
 
 namespace tempo{
-//-------------------------------------------------------------------
-// The type of every counter tempo keeps: calls, timed calls, constructions.
-//
-// 64 bits rather than 32 because a counter that wraps is worse than no counter
-// at all -- it reports a small number with no indication anything was lost. A
-// function called once a microsecond overflows an unsigned int in about 72
-// minutes, which is an ordinary lifetime for a server process, and the
-// instrumented functions most worth counting are exactly the hot ones. At 64
-// bits the same call rate needs half a million years.
-//
-// Named once and used everywhere so the width cannot drift between the counters
-// that hold it, the snapshots that copy it and the report that prints it.
-//
-// Recursion depth deliberately does NOT use this: it is bounded by the stack,
-// cannot approach even 32 bits, and reads better narrow.
-using CallCount = std::uint64_t;
 
+using CallCount =  std::uint64_t;
+
+//Value type name değil, fonksiyonlar ve metodların ta kendisi, 
+//bunları Fonksiyon classının valueları gibi düşünebiliriz
 template <auto Value>
 concept FunctionPointer =
     std::is_pointer_v<decltype(Value)> &&
@@ -168,7 +156,7 @@ template <auto Value>
 concept MethodPointer = std::is_member_function_pointer_v<decltype(Value)>;
 
 template <auto Value>
-concept SupportedCallable = FunctionPointer<Value> || MethodPointer<Value>;
+concept CallablePointer = FunctionPointer<Value> || MethodPointer<Value>;
 
 namespace detail {
 
@@ -533,7 +521,10 @@ inline void report_at_exit(std::ostream& out = std::cout) {
     (void)guard;
 }
 
-// A callable object: lambda, functor, std::function. It needs a single,
+// A callable object: lambda, functor, std::function. The type-domain counterpart
+// of CallablePointer -- between them they are everything tempo can measure.
+//
+// It needs a single,
 // non-template operator() -- generic lambdas ([](auto x){...}) and functors with
 // an overloaded operator() are rejected here, because they have no signature
 // until they are called. The rejection is not silent: you get a constraint-not-
@@ -787,7 +778,7 @@ struct Callable : CallableImplementation<CallableValue>::Type {
     // The single most common mistake: pointing the macros at a lambda or a
     // functor. Those are objects, and an object with state can never be a
     // template argument -- which is why the factories exist.
-    static_assert(SupportedCallable<CallableValue>,
+    static_assert(CallablePointer<CallableValue>,
         "tempo: the template argument is not a function or member function pointer.\n"
         "  TEMPO_INSTRUMENT, TEMPO_CALLABLE_METRICS and TEMPO_CALLABLE_PROFILER take\n"
         "  the ADDRESS OF A FUNCTION:\n"

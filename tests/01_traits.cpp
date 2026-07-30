@@ -119,8 +119,8 @@ static_assert(tempo::FunctionPointer<&free_add>);
 static_assert(!tempo::MethodPointer<&free_add>);
 static_assert(tempo::MethodPointer<&Service::handle>);
 static_assert(!tempo::FunctionPointer<&Service::handle>);
-static_assert(tempo::SupportedCallable<&free_add>);
-static_assert(tempo::SupportedCallable<&Service::handle>);
+static_assert(tempo::CallablePointer<&free_add>);
+static_assert(tempo::CallablePointer<&Service::handle>);
 
 struct NotCallable { int value; };
 static_assert(!tempo::CallableObject<NotCallable>);

@@ -29,8 +29,8 @@ int main() {
     static_assert(tempo::MethodPointer<&Session::touch>);
     static_assert(tempo::MethodPointer<&Session::is_open>);
     static_assert(!tempo::MethodPointer<&add>);
-    static_assert(tempo::SupportedCallable<&add>);
-    static_assert(tempo::SupportedCallable<&Session::is_open>);
+    static_assert(tempo::CallablePointer<&add>);
+    static_assert(tempo::CallablePointer<&Session::is_open>);
 
     // --- a free function ------------------------------------------------------
     using Add = TEMPO_FUNCTION(add);
