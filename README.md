@@ -11,15 +11,23 @@ it.
 ```cpp
 #include "tempo.hpp"
 
-namespace impl { int fibonacci(unsigned n); }
+std::size_t run_query(const std::string& sql, int limit);   // your code, unchanged
 
-TEMPO_INSTRUMENT(impl::fibonacci, fibonacci);
+tempo::CallableMetrics<&run_query> query;                   // one object, no macro
 
-fibonacci(26);
-fibonacci(32);
+void nightly_job() {
+    query("select id from orders where status = 'open'", 100);
+    query("select * from orders join items using (order_id)", 5000);
 
-auto [slowest_n] = fibonacci.slowest_args();   // 32 — the input that was slowest
+    // Ordinary calls, all timed. The arguments of the worst one are still here.
+    const auto [slowest_sql, slowest_limit] = query.slowest_args();
+    std::cout << "worst query: " << slowest_sql << " (limit " << slowest_limit << ")\n";
+}
 ```
+
+`snapshot()` returns the rest — call count, total, min and max duration, the
+fastest call's arguments, the file and line of the last call — all read under one
+lock, so the numbers describe the same moment.
 
 Point tempo at a function or method pointer and you also get a type that knows
 the signature — return type, parameter types, arity, whether it is a member,
@@ -28,7 +36,7 @@ call expression directly rather than through a named local, so the return value
 is never copied or moved and even immovable return types pass through.
 
 MIT licensed. Header-only, nothing to link. Requires C++20 (concepts,
-`std::source_location`, `inline static`).
+`std::source_location`, `__VA_OPT__`, `std::erase_if`, `<ranges>`).
 
 ## Building
 
@@ -63,27 +71,30 @@ The header defines its own version, so code that vendors a copy can pin the
 revision it was written against:
 
 ```cpp
-#if !defined(TEMPO_VERSION) || TEMPO_VERSION < 10000
-#error "this code needs tempo 1.0.0 or newer"
+#if !defined(TEMPO_VERSION) || TEMPO_VERSION < 100
+#error "this code needs tempo 0.1.0 or newer"
 #endif
 ```
 
 `TEMPO_VERSION` is `major * 10000 + minor * 100 + patch`, which orders correctly
 across all three fields; `TEMPO_VERSION_MAJOR`, `_MINOR`, `_PATCH` and
-`TEMPO_VERSION_STRING` are there too. The major number stays at `0` while the
-API is still free to change.
+`TEMPO_VERSION_STRING` are there too. The current version is `0.1.0`, and the
+major number stays at `0` while the API is still free to change.
 
-### Flags that change behaviour
+### Compiler flags
+
+No compiler flag switches anything tempo does — the three macros below are the
+only switches it has. What the flags people ask about were checked to do:
 
 | Flag | Effect |
 |---|---|
-| `-O0` vs `-O2` | Per-call overhead roughly doubles unoptimized: **169 ns** at `-O0` against **83 ns** at `-O2`. Every overhead number quoted in this README is `-O2`. Measure at the level you ship. |
-| `-fno-exceptions` | Compiles and works. The guards that skip recording for a throwing call become dead code, since nothing can throw. |
-| `-fno-rtti` | No effect. tempo reads `__PRETTY_FUNCTION__`, never `typeid`. |
+| `-O0` vs `-O2` | The one flag with a measurable effect, and it is on cost rather than behaviour: per-call overhead roughly doubles unoptimized — **≈76 ns** at `-O0` against **≈38 ns** at `-O2`, timing 200k calls of a two-`int` function against the same loop calling it directly (GCC 15, x86-64). Absolute numbers are yours to measure; every one quoted in this README is `-O2`. |
+| `-fno-exceptions` | Builds and works — the examples compile clean under it. The guards that skip recording for a throwing call become dead code, since nothing can throw. |
+| `-fno-rtti` | Nothing to switch off: tempo reads `__PRETTY_FUNCTION__`, never `typeid`. |
 | `-flto` | No effect on correctness. |
 | `-std=c++23` | Builds and passes the suite. C++20 is the floor, not a ceiling. |
 
-### The three macros are ODR-sensitive
+### The three macros are the switches, and they are ODR-sensitive
 
 `TEMPO_ENABLED`, `TEMPO_PRINT_ENABLED` and `TEMPO_COUNT_RECURSION` change the
 bodies of inline functions and templates, and `TEMPO_ENABLED` changes the *type*
@@ -102,16 +113,22 @@ If you define them in source instead, they must come before `#include
 ### Compiler-dependent output
 
 `tempo::report::print()` names each row by scraping `__PRETTY_FUNCTION__`, whose
-spelling is not standardised. A function in an anonymous namespace prints as
-`{anonymous}::f` under GCC and `&(anonymous namespace)::f` under Clang, and the
+spelling is not standardised. A free function prints as `tempo::Callable<f>`
+under GCC and `tempo::Callable<&f>` under Clang; one in an anonymous namespace
+becomes `{anonymous}::f` and `&(anonymous namespace)::f` respectively, and the
 name column is capped at 60 characters, so the longer Clang spelling may be
 truncated. Do not parse the report; read `snapshot()` instead.
 
 ### What CI covers
 
-GCC and Clang on Linux, under every combination of the three macros, at C++20
-and C++23, plus AddressSanitizer, UndefinedBehaviorSanitizer and ThreadSanitizer,
-over the tests and the examples alike.
+GCC and Clang on Linux. The test suite runs under the macro combinations that
+change behaviour at runtime — per-call printing on and off, recursion counting on
+and off — and the examples are compiled under those plus `TEMPO_ENABLED=0`, which
+the tests cannot use because they deliberately inspect wrapper types that stop
+existing when the switch is off. On top of that: the compile-failure suite under
+both compilers, AddressSanitizer, UndefinedBehaviorSanitizer and ThreadSanitizer
+under Clang over both the tests and the examples, and the suite at C++20 and
+C++23.
 
 **Linux is the only platform covered.** macOS and MSVC are not: the code paths
 for both exist and are written against the documented behaviour, and the macOS
@@ -120,18 +137,31 @@ in `.github/workflows/ci.yml`, commented out, ready to be switched back on.
 
 ## Instrumenting without touching call sites
 
-`TEMPO_INSTRUMENT` names a function once, at its declaration, and leaves every
-call site alone. A variable and a function cannot share a name in one scope but
-they can across scopes, so the function lives in a nested namespace and the
-wrapper takes its name outside; `fibonacci(26)` then resolves to the wrapper.
+The wrapper object above still has to be named at each call site.
+`TEMPO_INSTRUMENT` is the alternative: name the function once, at its
+declaration, and leave every call site alone. A variable and a function cannot
+share a name in one scope but they can across scopes, so the function lives in a
+nested namespace and the wrapper takes its name outside:
 
-The call site is still recorded, and no macro is involved. `Metrics::operator()`
-is declared with the callable's exact parameter list plus a trailing
-`std::source_location` that defaults to `current()` — and because those
+```cpp
+namespace impl {
+    std::size_t render_page(const std::string& path, int width);
+}
+
+TEMPO_INSTRUMENT(impl::render_page, render_page);
+
+render_page("/index.html", 1280);        // every existing call site, unchanged
+
+const auto stats = render_page.snapshot();
+```
+
+The call site is still recorded, and no macro is involved in making the call.
+`Metrics::operator()` is declared with the callable's exact parameter list plus a
+trailing `std::source_location` that defaults to `current()` — and because those
 parameters come from the class template rather than being deduced from the call,
 the default argument is evaluated at the caller.
 
-Define `TEMPO_ENABLED` as `0` before including and every instrumented name
+Define `TEMPO_ENABLED` as `0` on the command line and every instrumented name
 collapses to a plain function pointer that the optimizer inlines away, so the
 same source builds with tempo entirely absent.
 
@@ -166,6 +196,25 @@ records is the header's, not yours. Counting is unaffected — only the reported
 call site is. Use `TEMPO_PROFILE_CALL` whenever the location matters, or
 `tempo::measure` instead, which does not need it.
 
+## Lambdas and functors
+
+Lambdas and functors are objects, not pointers, so they cannot be template
+arguments. Three factories take the object instead: `tempo::wrap` for counting,
+`tempo::profile` for counting plus call-site reporting, and `tempo::measure` for
+the full set — counting, timing and the fastest and slowest arguments.
+
+```cpp
+auto parse = tempo::measure([](std::string_view line) { return parse_row(line); });
+
+for (const auto& line : lines) { parse(line); }
+
+const auto [worst_line] = parse.slowest_args();   // the row that took longest
+```
+
+A closure has a concrete signature, so the wrapper's `operator()` is built from
+it and the call site is captured with no macro. A *generic* lambda
+(`[](auto x){}`) has no signature until it is called and is rejected outright.
+
 ## Recursion
 
 A recursive call is resolved at compile time to the function itself and never
@@ -173,15 +222,19 @@ touches the pointer the wrapper holds, so no library can intercept it — the bo
 has to name the wrapper. `TEMPO_RECURSIVE` sets that up in one line:
 
 ```cpp
-TEMPO_RECURSIVE(int, fibonacci, unsigned n) {
-    return n < 2 ? n : TEMPO_SELF(fibonacci)(n-1) + TEMPO_SELF(fibonacci)(n-2);
+TEMPO_RECURSIVE(std::size_t, count_nodes, const Node& node) {
+    std::size_t total = 1;
+    for (const Node* child : node.children) { total += TEMPO_SELF(count_nodes)(*child); }
+    return total;
 }
 
-fibonacci(24);   // an ordinary call site, as with TEMPO_INSTRUMENT
+count_nodes(root);   // an ordinary call site, as with TEMPO_INSTRUMENT
+
+count_nodes.snapshot().max_depth;   // how deep the tree actually went
 ```
 
-The macro declares the real function under a suffixed name — `TEMPO_TARGET(fibonacci)`,
-which expands to `fibonacci_tempo_target` — points a wrapper at it under the plain
+The macro declares the real function under a suffixed name — `TEMPO_TARGET(count_nodes)`,
+which expands to `count_nodes_tempo_target` — points a wrapper at it under the plain
 name, and then opens the real definition, which is why the body you write follows
 the macro directly. You never need to write `TEMPO_TARGET` yourself; it is the
 name `TEMPO_SELF` resolves to when recursion counting is off.
@@ -191,23 +244,27 @@ name `TEMPO_SELF` resolves to when recursion counting is off.
 call is counted — exactly what an untouched recursive function does. Set it to
 `1` and it names the wrapper instead, and every level is counted:
 
-| | calls | deepest | wall | tempo total |
-|---|---|---|---|---|
-| `TEMPO_COUNT_RECURSION=0` | 1 | 1 | 0.21 ms | 0.20 ms |
-| `TEMPO_COUNT_RECURSION=1` | 150049 | 24 | 3.56 ms | 3.55 ms |
+| | calls | deepest | total time |
+|---|---|---|---|
+| `TEMPO_COUNT_RECURSION=0` | 1 | 1 | 0.08 ms |
+| `TEMPO_COUNT_RECURSION=1` | 150049 | 24 | 1.9 ms |
 
-Off is the default because counting is not free: at roughly 82 ns per call,
-routing 150k recursive calls through the wrapper turned a 0.21 ms computation
-into 3.56 ms. Use it to answer "how many times does this really run", not to time
-a hot recursion.
+Measured by `examples/06_recursion.cpp` on `fibonacci(24)`, GCC `-O2`.
+
+Off is the default because counting is not free: routing 150049 recursive calls
+through the wrapper turned a 0.08 ms computation into 1.9 ms, about 12 ns each.
+That is cheaper than a fully measured call, since an inner call takes no clock
+reading and never touches the statistics lock — it still pays for the counter,
+the depth bookkeeping and a copy of its arguments. Use it to answer "how many
+times does this really run", not to time a hot recursion.
 
 Timing stays correct in both modes because only the outermost call is timed.
-Timing every level would sum intervals that contain one another — for
-`fibonacci(22)` that reports about 69 ms of work for 4.7 ms of wall time. For the
-same reason `average_ms()` divides by `timed_calls`, the outermost count, not by
-every recursive step. `max_depth` records the deepest level reached, and the
-report grows a `depth` column only when something actually recursed, so an
-ordinary program prints the table it always did.
+Timing every level would sum intervals that contain one another and report a
+multiple of the time the program actually spent. For the same reason
+`average_ms()` divides by `timed_calls`, the outermost count, not by every
+recursive step. `max_depth` records the deepest level reached, and the report
+grows a `depth` column only when something actually recursed, so an ordinary
+program prints the table it always did.
 
 Depth is tracked per thread, so threads recursing independently do not disturb
 each other, and it is restored correctly when a call throws. Only direct
@@ -218,65 +275,24 @@ a type alias first — the preprocessor would split it.
 `TEMPO_INSTRUMENT` is unaffected: it never routes recursion through the wrapper,
 so an existing recursive function keeps measuring its base call only.
 
-## Examples
+## Counting constructions
 
-```
-cd examples && make run
-```
-
-One use case per file, kept short. The exhaustive version of each — every edge
-case, proved rather than shown — is in `tests/`.
-
-| | |
-|---|---|
-| `01_counting.cpp` | counting calls to a function or a method |
-| `02_timing.cpp` | timings, and the argument values of the slowest call |
-| `03_lambdas.cpp` | lambdas and functors, through the factories |
-| `04_instrument.cpp` | instrument once, call sites unchanged |
-| `05_report.cpp` | one sorted summary of everything that ran |
-| `06_recursion.cpp` | counting recursive calls, and the depth gate |
-| `07_constructors.cpp` | counting object construction |
-| `08_traits.cpp` | reading a signature at compile time |
-
-## Tests
-
-```
-cd tests && make run          # the whole suite
-make matrix                   # every combination of the macros
-make errors              # the errors, checked for being one line and readable
-make sanitize                 # address + undefined behaviour
-make tsan                     # data races
-```
-
-The examples have the same three: `cd examples && make run`, `make sanitize`,
-`make tsan`.
-
-Each file is a separate binary, like the examples, and exits non-zero on
-failure. 126 tests, 398 checks.
-
-| | |
-|---|---|
-| `01_traits.cpp` | signature introspection, almost entirely `static_assert` |
-| `02_counting.cpp` | counters, the per-type sharing rule, reset |
-| `03_forwarding.cpp` | copies and moves counted exactly, immovable returns |
-| `04_metrics.cpp` | timing invariants, extremes, snapshot coherence |
-| `05_location.cpp` | call-site capture, checked against `__LINE__` |
-| `06_recursion.cpp` | the depth gate, both counting modes, throwing recursion |
-| `07_exceptions.cpp` | throwing calls, nested unwinding, failed construction |
-| `08_threads.cpp` | exact counts under contention, torn-read detection |
-| `09_constructors.cpp` | `ConstructorProfiler`, elision, move-only arguments |
-| `10_abuse.cpp` | degenerate signatures, 16 parameters, nesting, mid-run reset |
-| `11_noexcept.cpp` | the qualifier surviving the wrapper, and what capture costs |
-| `errors/` | 14 mistakes that must NOT compile, each with one clear message |
-
-Lambdas and functors are objects, not pointers, so they cannot be template
-arguments. Use the factories instead of the macros:
+`ConstructorProfiler` counts how many objects of a type were built through it. It
+forwards its arguments straight into the constructor and returns the object as a
+prvalue, so it is built in the caller's storage — no temporary, no copy, no move,
+and it works for types that can do neither:
 
 ```cpp
-auto m = tempo::measure([](int rounds, int id) { /* ... */ return id; });
-m(12, 302);
-auto [slowest_rounds, slowest_id] = m.slowest_args();   // 12, 302
+tempo::ConstructorProfiler<Connection> make_connection;
+
+Connection c = make_connection("db-1", 5432);
+
+make_connection.obj_count;                              // objects built here
+static_assert(make_connection.can_construct<const char*, int>);
 ```
+
+It sees only the constructions that go through it: a plain `Connection c{...}`
+elsewhere is invisible, as are copies, destructions and constructors that throw.
 
 ## Reporting
 
@@ -285,21 +301,26 @@ through the accessors, or all at once as one sorted summary from
 `tempo::report::print()`:
 
 ```
-callable                         calls    total ms      avg ms      min ms      max ms
---------------------------------------------------------------------------------------
-tempo::Callable<shared_worker>    2000      1.7875      0.0009      0.0002      0.0097
-tempo::Callable<slow_path>           5      0.1220      0.0244      0.0083      0.0410
+=== tempo report ===================================================
+callable                     calls    total ms      avg ms      min ms      max ms
+----------------------------------------------------------------------------------
+tempo::Callable<worker>       2000      2.3531      0.0012      0.0002      0.0328
+tempo::Callable<slow_path>       5      0.1263      0.0253      0.0092      0.0441
+tempo::Callable<fast_path>      50      0.0011      0.0000      0.0000      0.0001
+==================================================================================
 ```
 
-Every metric registers itself on its first call. `tempo::report::at_exit()`
-prints the table when the program ends, and `tempo::report::reset_all()` clears
-everything. Read statistics with `snapshot()`, which returns them all under one
-lock so the numbers describe the same moment.
+Rows are sorted by total time, so the hot spot is the first line, and a metric
+that was never called is left out. Every metric registers itself on its first
+call. `tempo::report::at_exit()` prints the table when the program ends, and
+`tempo::report::reset_all()` clears everything. Read statistics with
+`snapshot()`, which returns them all under one lock so the numbers describe the
+same moment.
 
-Define `TEMPO_PRINT_ENABLED` as `1` before including the header to get a block
-of lines on every call instead — the clearer view when you are watching a
-handful of calls, and unusable on anything called often. It is off by default
-because the printing happens under the same lock as the recording.
+Define `TEMPO_PRINT_ENABLED` as `1` to get a block of lines on every call
+instead — the clearer view when you are watching a handful of calls, and unusable
+on anything called often. It is off by default because the printing happens under
+the same lock as the recording.
 
 Statistics are mutex-guarded and safe to gather from several threads. The lock
 is taken only after the clock has stopped, so it never inflates a measurement
@@ -331,8 +352,10 @@ Each message names what was wrong and what to write instead. The cases covered:
 |---|---|
 | C-style variadic (`printf`-like) | says so, and why the `...` cannot be kept |
 | ref-qualified or volatile member | says which qualifier is the problem |
+| ref-qualified or variadic `operator()` | same, for a functor's call operator |
 | lambda passed to the macros | points at `tempo::measure` instead |
 | generic lambda, or overloaded `operator()` | explains that it has no signature until called |
+| a type that is not callable at all | says what a callable object has to look like |
 | `tempo::Metrics<MyLambda>` | names the wrapper type that was meant |
 | wrong arguments at a call site | reminds you the instance comes first for a method |
 | `slowest_args()` with unstorable args | explains which parameter disabled capture |
@@ -351,10 +374,10 @@ name still satisfies `noexcept(f(x))` and nothing that depended on the guarantee
 changes meaning:
 
 ```cpp
-namespace impl { int scale(int v) noexcept { return v * 2; } }
-TEMPO_INSTRUMENT(impl::scale, scale);
+namespace impl { int clamp_volume(int level) noexcept; }
+TEMPO_INSTRUMENT(impl::clamp_volume, clamp_volume);
 
-static_assert(noexcept(scale(1)));   // still true through the wrapper
+static_assert(noexcept(clamp_volume(1)));   // still true through the wrapper
 ```
 
 This matters more than it looks, because `TEMPO_INSTRUMENT` works by giving the
@@ -383,12 +406,102 @@ recursive `noexcept` function cannot be declared through it. And an allocation
 failure inside the once-per-metric registration terminates rather than unwinds,
 which is what any `noexcept` function does when it runs out of memory.
 
+## Examples
+
+```
+cd examples && make run
+```
+
+One use case per file, kept short. The exhaustive version of each — every edge
+case, proved rather than shown — is in `tests/`.
+
+| | |
+|---|---|
+| `01_counting.cpp` | counting calls to a function or a method |
+| `02_timing.cpp` | timings, and the argument values of the slowest call |
+| `03_lambdas.cpp` | lambdas and functors, through the factories |
+| `04_instrument.cpp` | instrument once, call sites unchanged |
+| `05_report.cpp` | one sorted summary of everything that ran |
+| `06_recursion.cpp` | counting recursive calls, and the depth gate |
+| `07_constructors.cpp` | counting object construction |
+| `08_traits.cpp` | reading a signature at compile time |
+
+`make matrix` compiles them all under every macro combination, `make sanitize`
+runs them under address and undefined behaviour, `make tsan` under the thread
+sanitizer.
+
+## Tests
+
+```
+cd tests && make run          # the whole suite
+make matrix                   # every combination of the macros
+make errors                   # the compile-failure suite: one clear message each
+make sanitize                 # address + undefined behaviour
+make tsan                     # data races
+```
+
+Each file is a separate binary, like the examples, and exits non-zero on
+failure. 126 tests, 401 checks.
+
+| | |
+|---|---|
+| `01_traits.cpp` | signature introspection, almost entirely `static_assert` |
+| `02_counting.cpp` | counters, the per-type sharing rule, reset |
+| `03_forwarding.cpp` | copies and moves counted exactly, immovable returns |
+| `04_metrics.cpp` | timing invariants, extremes, snapshot coherence |
+| `05_location.cpp` | call-site capture, checked against `__LINE__` |
+| `06_recursion.cpp` | the depth gate, both counting modes, throwing recursion |
+| `07_exceptions.cpp` | throwing calls, nested unwinding, failed construction |
+| `08_threads.cpp` | exact counts under contention, torn-read detection |
+| `09_constructors.cpp` | `ConstructorProfiler`, elision, move-only arguments |
+| `10_abuse.cpp` | degenerate signatures, 16 parameters, nesting, mid-run reset |
+| `11_noexcept.cpp` | the qualifier surviving the wrapper, and what capture costs |
+| `errors/` | 14 mistakes that must NOT compile, each with one clear message |
+
 ## Known limits
 
-C-style variadic functions, generic lambdas (`[](auto x){}`), overloaded
-`operator()` and overloaded function names are not supported — all of them
-diagnosed as above rather than left to the compiler. Counters are static per
-wrapped type, so every `std::function<int(int)>` in a program shares one counter;
-wrap the underlying lambda instead. The summary reports totals and extremes but
-no percentiles or histograms, since samples are not retained. `noexcept`
-callables are supported, with the argument-capture restriction described above.
+**Callables tempo will not read.** C-style variadic functions, generic lambdas
+(`[](auto x){}`), overloaded `operator()`, ref-qualified or `volatile` call
+operators and member functions, and overloaded function names. Every one of them
+is diagnosed with a sentence rather than left to the compiler.
+
+**Statistics are per wrapped type, not per object.** Counters, timings and
+captured arguments are static members of the wrapper type, so two wrapper objects
+over the same function share one set of numbers — and every
+`std::function<int(int)>` in a program is the same type. Wrap the underlying
+lambda instead.
+
+**Argument capture needs copyable, default-constructible parameters.** A
+move-only parameter such as `std::unique_ptr`, a reference member, or a type with
+no default constructor sets `tracks_args` to `false`, and `slowest_args()` then
+becomes a compile error naming the parameter responsible. `noexcept` callables
+are stricter still, as described above. Timing, counts and the report are
+unaffected.
+
+**Short calls mostly measure tempo.** A wrapped call that returns immediately
+reports about 15 ns here, which is essentially the two clock readings around it.
+Measure work that takes longer than the instrument.
+
+**`TEMPO_ENABLED=0` only neutralises the macros.** Names introduced by
+`TEMPO_INSTRUMENT` and `TEMPO_RECURSIVE` collapse to plain function pointers; a
+`tempo::CallableMetrics<&f>` object written out by hand is still a metric and
+still measures. Anything that has to compile away must go through the macros.
+
+**Recursion is direct-only.** Mutual recursion needs both functions instrumented,
+`TEMPO_RECURSIVE` has no slot for `noexcept`, and a return type containing a
+comma has to go behind a type alias first.
+
+**Members change their call sites.** A method has no free name for a wrapper to
+shadow, so a wrapped one is called as `m(object, args...)` — there is no
+equivalent of the `TEMPO_INSTRUMENT` seam for it. And `Profiler` needs
+`TEMPO_PROFILE_CALL` to report your call site instead of the header's; `Metrics`
+does not.
+
+**No percentiles, no histograms, no call graph.** Samples are not retained, so
+the summary has totals and extremes and nothing else, and only what you name is
+measured — nothing is discovered for you, inlined callees included. tempo answers
+"which input was slow", not "where is the time going" — that is a sampling
+profiler's job, and the two go together well.
+
+**Linux, GCC and Clang are what is verified.** macOS and MSVC have code paths and
+no CI behind them.
