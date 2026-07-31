@@ -439,53 +439,6 @@ inline void at_exit(std::ostream& out = std::cout) {
 } // namespace report
 
 
-namespace signature {
-
-template <bool Noexcept, bool Const, typename ret, typename... args>
-struct MemberSignatureBody {
-    using ReturnType = ret;
-    using ArgsType = std::tuple<args...>;
-    static constexpr bool is_const = Const;
-    static constexpr bool is_noexcept = Noexcept;
-    static constexpr auto total_arg_size = (sizeof(args) + ... + 0);
-};
-
-
-template <typename MemberPointer>
-struct MemberSignature : errors::UnsupportedSignature {
-    static_assert(errors::always_false<MemberPointer>,
-        TEMPO_UNREADABLE_FUNCTOR_MESSAGE);
-};
-
-template <typename Owner, typename ret, typename... args>
-struct MemberSignature<ret (Owner::*)(args...)>
-    : MemberSignatureBody<false, false, ret, args...> {};
-
-template <typename Owner, typename ret, typename... args>
-struct MemberSignature<ret (Owner::*)(args...) const>
-    : MemberSignatureBody<false, true, ret, args...> {};
-
-template <typename Owner, typename ret, typename... args>
-struct MemberSignature<ret (Owner::*)(args...) noexcept>
-    : MemberSignatureBody<true, false, ret, args...> {};
-
-template <typename Owner, typename ret, typename... args>
-struct MemberSignature<ret (Owner::*)(args...) const noexcept>
-    : MemberSignatureBody<true, true, ret, args...> {};
-
-
-template <typename F>
-struct FunctorSignature {
-    using Type = errors::UnsupportedSignature;
-};
-
-template <typename F>
-requires callable_traits::CallableObject<F>
-struct FunctorSignature<F> {
-    using Type = MemberSignature<decltype(&F::operator())>;
-};
-
-} // namespace signature
 
 namespace wrapper {
 
@@ -642,6 +595,54 @@ struct Callable : callable_binding::Implementation<CallableValue>::Type {
 };
 
 
+namespace functor_binding {
+
+template <bool Noexcept, bool Const, typename ret, typename... args>
+struct FunctorBody {
+    using ReturnType = ret;
+    using ArgsType = std::tuple<args...>;
+    static constexpr bool is_const = Const;
+    static constexpr bool is_noexcept = Noexcept;
+    static constexpr auto total_arg_size = (sizeof(args) + ... + 0);
+};
+
+
+template <typename CallOperatorPointer>
+struct FunctorImpl : errors::UnsupportedSignature {
+    static_assert(errors::always_false<CallOperatorPointer>,
+        TEMPO_UNREADABLE_FUNCTOR_MESSAGE);
+};
+
+template <typename Owner, typename ret, typename... args>
+struct FunctorImpl<ret (Owner::*)(args...)>
+    : FunctorBody<false, false, ret, args...> {};
+
+template <typename Owner, typename ret, typename... args>
+struct FunctorImpl<ret (Owner::*)(args...) const>
+    : FunctorBody<false, true, ret, args...> {};
+
+template <typename Owner, typename ret, typename... args>
+struct FunctorImpl<ret (Owner::*)(args...) noexcept>
+    : FunctorBody<true, false, ret, args...> {};
+
+template <typename Owner, typename ret, typename... args>
+struct FunctorImpl<ret (Owner::*)(args...) const noexcept>
+    : FunctorBody<true, true, ret, args...> {};
+
+
+template <typename F>
+struct Implementation {
+    using Type = errors::UnsupportedSignature;
+};
+
+template <typename F>
+requires callable_traits::CallableObject<F>
+struct Implementation<F> {
+    using Type = FunctorImpl<decltype(&F::operator())>;
+};
+
+} // namespace functor_binding
+
 template <typename F>
 struct Functor {
 
@@ -649,18 +650,18 @@ struct Functor {
         "tempo: this is not a callable object tempo can read.\n"
         TEMPO_NOT_A_CALLABLE_OBJECT_MESSAGE);
 
-    using SignatureType = typename signature::FunctorSignature<F>::Type;
-    using ReturnType = typename SignatureType::ReturnType;
-    using ArgsType   = typename SignatureType::ArgsType;
+    using ImplType   = typename functor_binding::Implementation<F>::Type;
+    using ReturnType = typename ImplType::ReturnType;
+    using ArgsType   = typename ImplType::ArgsType;
     using ClassType  = F;
 
     static constexpr bool is_member = false;
     static constexpr bool is_const_member = false;
     static constexpr bool is_functor = true;
-    static constexpr bool is_const_callable = SignatureType::is_const;
-    static constexpr bool is_noexcept = SignatureType::is_noexcept;
+    static constexpr bool is_const_callable = ImplType::is_const;
+    static constexpr bool is_noexcept = ImplType::is_noexcept;
     static constexpr auto arg_count = std::tuple_size_v<ArgsType>;
-    static constexpr auto total_arg_size = SignatureType::total_arg_size;
+    static constexpr auto total_arg_size = ImplType::total_arg_size;
 
     inline static std::atomic<CallCount> call_count{0};
 
