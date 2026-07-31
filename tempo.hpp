@@ -562,7 +562,7 @@ requires callable_traits::MethodPointer<MethodValue>
 struct Method : method_binding::MethodImpl<decltype(MethodValue), MethodValue> {};
 
 
-namespace callable_binding {
+namespace callable_matcher {
 
 template<auto CallableValue>
 struct Implementation {
@@ -581,16 +581,16 @@ struct Implementation<CallableValue> {
     using Type = Method<CallableValue>;
 };
 
-} // namespace callable_binding
+} // namespace callable_matcher
 
 template<auto CallableValue>
-struct Callable : callable_binding::Implementation<CallableValue>::Type {
+struct Callable : callable_matcher::Implementation<CallableValue>::Type {
 
     static_assert(callable_traits::CallablePointer<CallableValue>,
         TEMPO_NOT_A_CALLABLE_POINTER_MESSAGE);
 
 
-    using CallableType = typename callable_binding::Implementation<CallableValue>::Type;
+    using CallableType = typename callable_matcher::Implementation<CallableValue>::Type;
     using CallableType::operator();
 };
 
