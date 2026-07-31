@@ -441,6 +441,16 @@ inline void at_exit(std::ostream& out = std::cout) {
 
 namespace signature {
 
+template <bool Noexcept, bool Const, typename ret, typename... args>
+struct MemberSignatureBody {
+    using ReturnType = ret;
+    using ArgsType = std::tuple<args...>;
+    static constexpr bool is_const = Const;
+    static constexpr bool is_noexcept = Noexcept;
+    static constexpr auto total_arg_size = (sizeof(args) + ... + 0);
+};
+
+
 template <typename MemberPointer>
 struct MemberSignature : errors::UnsupportedSignature {
     static_assert(errors::always_false<MemberPointer>,
@@ -448,40 +458,20 @@ struct MemberSignature : errors::UnsupportedSignature {
 };
 
 template <typename Owner, typename ret, typename... args>
-struct MemberSignature<ret (Owner::*)(args...)> {
-    using ReturnType = ret;
-    using ArgsType = std::tuple<args...>;
-    static constexpr bool is_const = false;
-    static constexpr bool is_noexcept = false;
-    static constexpr auto total_arg_size = (sizeof(args) + ... + 0);
-};
+struct MemberSignature<ret (Owner::*)(args...)>
+    : MemberSignatureBody<false, false, ret, args...> {};
 
 template <typename Owner, typename ret, typename... args>
-struct MemberSignature<ret (Owner::*)(args...) const> {
-    using ReturnType = ret;
-    using ArgsType = std::tuple<args...>;
-    static constexpr bool is_const = true;
-    static constexpr bool is_noexcept = false;
-    static constexpr auto total_arg_size = (sizeof(args) + ... + 0);
-};
+struct MemberSignature<ret (Owner::*)(args...) const>
+    : MemberSignatureBody<false, true, ret, args...> {};
 
 template <typename Owner, typename ret, typename... args>
-struct MemberSignature<ret (Owner::*)(args...) noexcept> {
-    using ReturnType = ret;
-    using ArgsType = std::tuple<args...>;
-    static constexpr bool is_const = false;
-    static constexpr bool is_noexcept = true;
-    static constexpr auto total_arg_size = (sizeof(args) + ... + 0);
-};
+struct MemberSignature<ret (Owner::*)(args...) noexcept>
+    : MemberSignatureBody<true, false, ret, args...> {};
 
 template <typename Owner, typename ret, typename... args>
-struct MemberSignature<ret (Owner::*)(args...) const noexcept> {
-    using ReturnType = ret;
-    using ArgsType = std::tuple<args...>;
-    static constexpr bool is_const = true;
-    static constexpr bool is_noexcept = true;
-    static constexpr auto total_arg_size = (sizeof(args) + ... + 0);
-};
+struct MemberSignature<ret (Owner::*)(args...) const noexcept>
+    : MemberSignatureBody<true, true, ret, args...> {};
 
 
 template <typename F>
