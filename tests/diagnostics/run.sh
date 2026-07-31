@@ -1,6 +1,6 @@
 #!/bin/sh
 #
-# The diagnostics suite. Every file here is supposed to FAIL to compile -- that
+# The errors suite. Every file here is supposed to FAIL to compile -- that
 # is the point of it. What is being tested is the failure itself:
 #
 #   1. the build fails (a case that silently starts compiling is a bug),
@@ -65,8 +65,8 @@ done
 
 echo ""
 if [ $failed -eq 0 ]; then
-    echo "PASS: $passed diagnostics, each failing with one readable message"
+    echo "PASS: $passed errors, each failing with one readable message"
     exit 0
 fi
-echo "FAIL: $failed of $((passed + failed)) diagnostics"
+echo "FAIL: $failed of $((passed + failed)) errors"
 exit 1

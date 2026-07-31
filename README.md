@@ -243,7 +243,7 @@ case, proved rather than shown — is in `tests/`.
 ```
 cd tests && make run          # the whole suite
 make matrix                   # every combination of the macros
-make diagnostics              # the errors, checked for being one line and readable
+make errors              # the errors, checked for being one line and readable
 make sanitize                 # address + undefined behaviour
 make tsan                     # data races
 ```
@@ -267,7 +267,7 @@ failure. 126 tests, 398 checks.
 | `09_constructors.cpp` | `ConstructorProfiler`, elision, move-only arguments |
 | `10_abuse.cpp` | degenerate signatures, 16 parameters, nesting, mid-run reset |
 | `11_noexcept.cpp` | the qualifier surviving the wrapper, and what capture costs |
-| `diagnostics/` | 14 mistakes that must NOT compile, each with one clear message |
+| `errors/` | 14 mistakes that must NOT compile, each with one clear message |
 
 Lambdas and functors are objects, not pointers, so they cannot be template
 arguments. Use the factories instead of the macros:
@@ -338,7 +338,7 @@ Each message names what was wrong and what to write instead. The cases covered:
 | `slowest_args()` with unstorable args | explains which parameter disabled capture |
 | `ConstructorProfiler<int>` | says it needs a class |
 
-The one-error guarantee is enforced, not hoped for: `tests/diagnostics` compiles
+The one-error guarantee is enforced, not hoped for: `tests/errors` compiles
 each mistake and fails if it produces more than one error, or an error that does
 not carry tempo's own wording. Both compilers run it in CI, because they do not
 agree on which unsupported shapes they will silently accept.

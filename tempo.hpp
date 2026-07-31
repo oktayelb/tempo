@@ -136,7 +136,7 @@ struct ArgsAreNothrowStorable<std::tuple<Ts...>>
 } // namespace storage
 
 
-namespace diagnostics {
+namespace errors {
 template <typename...>
 inline constexpr bool always_false = false;
 
@@ -248,7 +248,7 @@ struct UnsupportedSignature {
     static constexpr std::size_t total_arg_size = 0;
 };
 
-} // namespace diagnostics
+} // namespace errors
 
 namespace report {
 
@@ -388,8 +388,8 @@ inline void at_exit(std::ostream& out = std::cout) {
 namespace signature {
 
 template <typename MemberPointer>
-struct MemberSignature : diagnostics::UnsupportedSignature {
-    static_assert(diagnostics::always_false<MemberPointer>,
+struct MemberSignature : errors::UnsupportedSignature {
+    static_assert(errors::always_false<MemberPointer>,
         "tempo: this callable object's operator() has a shape tempo cannot read.\n"
         "  tempo supports a plain operator(), optionally const and/or noexcept.\n"
         "  It does NOT support a ref-qualified operator() (declared with a trailing\n"
@@ -438,7 +438,7 @@ struct MemberSignature<ret (Owner::*)(args...) const noexcept> {
 
 template <typename F>
 struct FunctorSignature {
-    using Type = diagnostics::UnsupportedSignature;
+    using Type = errors::UnsupportedSignature;
 };
 
 template <typename F>
@@ -461,7 +461,7 @@ concept TempoWrapper = requires {
 
 template <typename W>
 struct WrapperOrStandIn {
-    using Type = diagnostics::UnsupportedCallable;
+    using Type = errors::UnsupportedCallable;
 };
 
 template <typename W>
@@ -499,8 +499,8 @@ struct FunctionBody {
 
 
 template <typename Signature, auto func_ptr>
-struct FunctionImpl : diagnostics::UnsupportedCallable {
-    static_assert(diagnostics::always_false_value<func_ptr>,
+struct FunctionImpl : errors::UnsupportedCallable {
+    static_assert(errors::always_false_value<func_ptr>,
         "tempo: this function's type is not supported.\n"
         "  tempo matches function pointers of the form  ret(*)(args...), with or\n"
         "  without 'noexcept'.\n"
@@ -546,8 +546,8 @@ struct MethodBody {
 };
 
 template <typename Signature, auto method>
-struct MethodImpl : diagnostics::UnsupportedCallable {
-    static_assert(diagnostics::always_false_value<method>,
+struct MethodImpl : errors::UnsupportedCallable {
+    static_assert(errors::always_false_value<method>,
         "tempo: this member function's type is not supported.\n"
         "  tempo matches member function pointers of the form  ret(Class::*)(args...),\n"
         "  their const version, and either of those declared 'noexcept'.\n"
@@ -584,7 +584,7 @@ namespace callable_binding {
 
 template<auto CallableValue>
 struct Implementation {
-    using Type = diagnostics::UnsupportedCallable;
+    using Type = errors::UnsupportedCallable;
 };
 
 template<auto CallableValue>
@@ -680,7 +680,7 @@ inline constexpr bool is_tempo_wrapper_template<Method<V>> = true;
 template <typename F>
 inline constexpr bool is_tempo_wrapper_template<Functor<F>> = true;
 template <>
-inline constexpr bool is_tempo_wrapper_template<diagnostics::UnsupportedCallable> = true;
+inline constexpr bool is_tempo_wrapper_template<errors::UnsupportedCallable> = true;
 
 } // namespace wrapper
 
@@ -744,7 +744,7 @@ struct Profiler{
     ReturnType operator()(auto&&... args) const
         requires (!std::invocable<const CallableType&, decltype(args)...>)
     {
-        static_assert(diagnostics::always_false<decltype(args)...>,
+        static_assert(errors::always_false<decltype(args)...>,
             "tempo::Profiler: this callable cannot be invoked with the arguments you passed.\n"
             TEMPO_BAD_CALL_ARGUMENTS_MESSAGE);
     }
@@ -802,7 +802,7 @@ struct FixedSignatureCall<Derived, CallableType, std::tuple<Args...>> {
     typename CallableType::ReturnType operator()(auto&&... args) const
         requires (!std::invocable<const CallableType&, decltype(args)...>)
     {
-        static_assert(diagnostics::always_false<decltype(args)...>,
+        static_assert(errors::always_false<decltype(args)...>,
             "tempo: this callable cannot be invoked with the arguments you passed.\n"
             TEMPO_BAD_CALL_ARGUMENTS_MESSAGE);
     }
@@ -830,7 +830,7 @@ struct MemberCall<Derived, CallableType, std::tuple<Args...>> {
     typename CallableType::ReturnType operator()(auto&&... args) const
         requires (!std::invocable<const CallableType&, decltype(args)...>)
     {
-        static_assert(diagnostics::always_false<decltype(args)...>,
+        static_assert(errors::always_false<decltype(args)...>,
             "tempo: this callable cannot be invoked with the arguments you passed.\n"
             TEMPO_BAD_CALL_ARGUMENTS_MESSAGE);
     }
@@ -844,7 +844,7 @@ using SignatureCall = std::conditional_t<
 
 template <typename Derived, typename CallableType>
 using CallOperator = std::conditional_t<
-    std::derived_from<CallableType, diagnostics::UnsupportedCallable>,
+    std::derived_from<CallableType, errors::UnsupportedCallable>,
     VariadicCall<Derived, CallableType>,
     SignatureCall<Derived, CallableType>>;
 
@@ -1024,7 +1024,7 @@ public:
     ReturnType call_at(SourceLocation, auto&&... args) const
         requires (!std::invocable<const CallableType&, decltype(args)...>)
     {
-        static_assert(diagnostics::always_false<decltype(args)...>,
+        static_assert(errors::always_false<decltype(args)...>,
             "tempo: call_at -- this callable cannot be invoked with these arguments.\n"
             TEMPO_BAD_CALL_ARGUMENTS_MESSAGE);
     }
@@ -1153,28 +1153,28 @@ auto measure(F&& target) {
 template <typename F>
 requires (!callable_traits::CallableObject<std::decay_t<F>>)
 auto wrap(F&&) {
-    static_assert(diagnostics::always_false<F>,
+    static_assert(errors::always_false<F>,
         "tempo::wrap: this argument is not a callable object tempo can read.\n"
         TEMPO_NOT_A_CALLABLE_OBJECT_MESSAGE);
-    return diagnostics::UnsupportedCallable{};
+    return errors::UnsupportedCallable{};
 }
 
 template <typename F>
 requires (!callable_traits::CallableObject<std::decay_t<F>>)
 auto profile(F&&) {
-    static_assert(diagnostics::always_false<F>,
+    static_assert(errors::always_false<F>,
         "tempo::profile: this argument is not a callable object tempo can read.\n"
         TEMPO_NOT_A_CALLABLE_OBJECT_MESSAGE);
-    return Profiler<diagnostics::UnsupportedCallable>{{}};
+    return Profiler<errors::UnsupportedCallable>{{}};
 }
 
 template <typename F>
 requires (!callable_traits::CallableObject<std::decay_t<F>>)
 auto measure(F&&) {
-    static_assert(diagnostics::always_false<F>,
+    static_assert(errors::always_false<F>,
         "tempo::measure: this argument is not a callable object tempo can read.\n"
         TEMPO_NOT_A_CALLABLE_OBJECT_MESSAGE);
-    return Metrics<diagnostics::UnsupportedCallable>{{}, {}};
+    return Metrics<errors::UnsupportedCallable>{{}, {}};
 }
 namespace construction {
 
@@ -1212,7 +1212,7 @@ struct ConstructorProfiler{
     template <typename... Args>
         requires (!std::constructible_from<ClassType, Args...>)
     ClassType operator() (Args&&...) const {
-        static_assert(diagnostics::always_false<Args...>,
+        static_assert(errors::always_false<Args...>,
             "tempo::ConstructorProfiler: ClassType cannot be constructed from these arguments. "
             "No matching constructor -- check the number and types of the arguments.");
     }
