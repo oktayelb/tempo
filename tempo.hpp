@@ -240,6 +240,60 @@ struct UnsupportedCallable {
     "      if constexpr (m.tracks_args) { ... m.slowest_args() ... }"
 
 
+#define TEMPO_UNREADABLE_FUNCTOR_MESSAGE                                       \
+    "tempo: this callable object's operator() has a shape tempo cannot read.\n"\
+    "  tempo supports a plain operator(), optionally const and/or noexcept.\n" \
+    "  It does NOT support a ref-qualified operator() (declared with a trailing\n"\
+    "  '&' or '&&'), a volatile operator(), or a C-style variadic one ('...').\n"\
+    "  Fix: declare the functor's operator() without the ref-qualifier, or wrap\n"\
+    "  the object in a lambda with concrete parameter types and pass that to\n" \
+    "  tempo::measure(...)."
+
+
+#define TEMPO_UNSUPPORTED_FUNCTION_MESSAGE                                     \
+    "tempo: this function's type is not supported.\n"                          \
+    "  tempo matches function pointers of the form  ret(*)(args...), with or\n"\
+    "  without 'noexcept'.\n"                                                  \
+    TEMPO_C_VARIADIC_MESSAGE
+
+
+#define TEMPO_UNSUPPORTED_METHOD_MESSAGE                                       \
+    "tempo: this member function's type is not supported.\n"                   \
+    "  tempo matches member function pointers of the form  ret(Class::*)(args...),\n"\
+    "  their const version, and either of those declared 'noexcept'.\n"        \
+    "  A ref-qualified member function (declared with a trailing '&' or '&&'), a\n"\
+    "  volatile one, or a C-style variadic one ('...') does not match.\n"      \
+    "  Fix: wrap the call in a lambda that captures the object and measure that --\n"\
+    "      auto m = tempo::measure([&obj](int a){ return obj.my_method(a); });"
+
+
+#define TEMPO_NOT_A_CALLABLE_POINTER_MESSAGE                                   \
+    "tempo: the template argument is not a function or member function pointer.\n"\
+    "  TEMPO_INSTRUMENT, TEMPO_CALLABLE_METRICS and TEMPO_CALLABLE_PROFILER take\n"\
+    "  the ADDRESS OF A FUNCTION:\n"                                           \
+    "      TEMPO_INSTRUMENT(impl::my_function, my_function);\n"                 \
+    "  If you passed a lambda, a functor or a std::function, use a factory\n"   \
+    "  instead -- those are objects, not function pointers, and an object\n"    \
+    "  cannot be a template argument:\n"                                       \
+    "      auto m = tempo::measure(my_lambda);\n"                              \
+    "      m(arg1, arg2);"
+
+
+#define TEMPO_NOT_A_CLASS_MESSAGE                                              \
+    "tempo::ConstructorProfiler: the template argument must be a class or struct.\n"\
+    "  There is nothing to count for a fundamental type (int, double, char, a\n"\
+    "  pointer, an enum): those have no constructor to instrument, and\n"      \
+    "  'int x = 5;' calls nothing.\n"                                          \
+    "  Fix: name the class whose constructions you want counted --\n"          \
+    "      tempo::ConstructorProfiler<MyClass> make;\n"                        \
+    "      MyClass obj = make(arg1, arg2);"
+
+
+#define TEMPO_BAD_CONSTRUCTOR_ARGUMENTS_MESSAGE                                \
+    "tempo::ConstructorProfiler: ClassType cannot be constructed from these arguments. "\
+    "No matching constructor -- check the number and types of the arguments."
+
+
 struct UnsupportedSignature {
     using ReturnType = UnsupportedReturn;
     using ArgsType   = std::tuple<UnsupportedArg>;
@@ -390,13 +444,7 @@ namespace signature {
 template <typename MemberPointer>
 struct MemberSignature : errors::UnsupportedSignature {
     static_assert(errors::always_false<MemberPointer>,
-        "tempo: this callable object's operator() has a shape tempo cannot read.\n"
-        "  tempo supports a plain operator(), optionally const and/or noexcept.\n"
-        "  It does NOT support a ref-qualified operator() (declared with a trailing\n"
-        "  '&' or '&&'), a volatile operator(), or a C-style variadic one ('...').\n"
-        "  Fix: declare the functor's operator() without the ref-qualifier, or wrap\n"
-        "  the object in a lambda with concrete parameter types and pass that to\n"
-        "  tempo::measure(...).");
+        TEMPO_UNREADABLE_FUNCTOR_MESSAGE);
 };
 
 template <typename Owner, typename ret, typename... args>
@@ -501,10 +549,7 @@ struct FunctionBody {
 template <typename Signature, auto func_ptr>
 struct FunctionImpl : errors::UnsupportedCallable {
     static_assert(errors::always_false_value<func_ptr>,
-        "tempo: this function's type is not supported.\n"
-        "  tempo matches function pointers of the form  ret(*)(args...), with or\n"
-        "  without 'noexcept'.\n"
-        TEMPO_C_VARIADIC_MESSAGE);
+        TEMPO_UNSUPPORTED_FUNCTION_MESSAGE);
 };
 
 template <typename ret, typename... args, auto func_ptr>
@@ -548,13 +593,7 @@ struct MethodBody {
 template <typename Signature, auto method>
 struct MethodImpl : errors::UnsupportedCallable {
     static_assert(errors::always_false_value<method>,
-        "tempo: this member function's type is not supported.\n"
-        "  tempo matches member function pointers of the form  ret(Class::*)(args...),\n"
-        "  their const version, and either of those declared 'noexcept'.\n"
-        "  A ref-qualified member function (declared with a trailing '&' or '&&'), a\n"
-        "  volatile one, or a C-style variadic one ('...') does not match.\n"
-        "  Fix: wrap the call in a lambda that captures the object and measure that --\n"
-        "      auto m = tempo::measure([&obj](int a){ return obj.my_method(a); });");
+        TEMPO_UNSUPPORTED_METHOD_MESSAGE);
 };
 
 template <typename ClassName, typename ret, typename... args, auto method>
@@ -605,15 +644,7 @@ template<auto CallableValue>
 struct Callable : callable_binding::Implementation<CallableValue>::Type {
 
     static_assert(callable_traits::CallablePointer<CallableValue>,
-        "tempo: the template argument is not a function or member function pointer.\n"
-        "  TEMPO_INSTRUMENT, TEMPO_CALLABLE_METRICS and TEMPO_CALLABLE_PROFILER take\n"
-        "  the ADDRESS OF A FUNCTION:\n"
-        "      TEMPO_INSTRUMENT(impl::my_function, my_function);\n"
-        "  If you passed a lambda, a functor or a std::function, use a factory\n"
-        "  instead -- those are objects, not function pointers, and an object\n"
-        "  cannot be a template argument:\n"
-        "      auto m = tempo::measure(my_lambda);\n"
-        "      m(arg1, arg2);");
+        TEMPO_NOT_A_CALLABLE_POINTER_MESSAGE);
 
 
     using CallableType = typename callable_binding::Implementation<CallableValue>::Type;
@@ -1187,13 +1218,7 @@ template <typename ClassType>
 struct ConstructorProfiler{
 
     static_assert(construction::Class<ClassType>,
-        "tempo::ConstructorProfiler: the template argument must be a class or struct.\n"
-        "  There is nothing to count for a fundamental type (int, double, char, a\n"
-        "  pointer, an enum): those have no constructor to instrument, and\n"
-        "  'int x = 5;' calls nothing.\n"
-        "  Fix: name the class whose constructions you want counted --\n"
-        "      tempo::ConstructorProfiler<MyClass> make;\n"
-        "      MyClass obj = make(arg1, arg2);");
+        TEMPO_NOT_A_CLASS_MESSAGE);
 
     inline static std::atomic<CallCount> obj_count{0};
 
@@ -1213,8 +1238,7 @@ struct ConstructorProfiler{
         requires (!std::constructible_from<ClassType, Args...>)
     ClassType operator() (Args&&...) const {
         static_assert(errors::always_false<Args...>,
-            "tempo::ConstructorProfiler: ClassType cannot be constructed from these arguments. "
-            "No matching constructor -- check the number and types of the arguments.");
+            TEMPO_BAD_CONSTRUCTOR_ARGUMENTS_MESSAGE);
     }
 
 private:
@@ -1230,11 +1254,16 @@ private:
     };
  };
 
-// These carry the shared paragraphs of the static_assert messages above. They
-// are expanded by the time the header is parsed, so undefining them here keeps
-// them out of every translation unit that includes tempo.
+
+//#undef so their scope is only within this heaeder
 #undef TEMPO_C_VARIADIC_MESSAGE
 #undef TEMPO_NOT_A_WRAPPER_MESSAGE
 #undef TEMPO_BAD_CALL_ARGUMENTS_MESSAGE
 #undef TEMPO_NOT_A_CALLABLE_OBJECT_MESSAGE
 #undef TEMPO_ARGS_NOT_STORED_MESSAGE
+#undef TEMPO_UNREADABLE_FUNCTOR_MESSAGE
+#undef TEMPO_UNSUPPORTED_FUNCTION_MESSAGE
+#undef TEMPO_UNSUPPORTED_METHOD_MESSAGE
+#undef TEMPO_NOT_A_CALLABLE_POINTER_MESSAGE
+#undef TEMPO_NOT_A_CLASS_MESSAGE
+#undef TEMPO_BAD_CONSTRUCTOR_ARGUMENTS_MESSAGE
