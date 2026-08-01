@@ -75,6 +75,23 @@
 #define TEMPO_CALLABLE_METRICS(callable) ::tempo::CallableMetrics<&callable>
 #define TEMPO_PROFILE_CALL(profiler, ...) (profiler).call_at(::std::source_location::current() __VA_OPT__(,) __VA_ARGS__)
 
+#define TEMPO_SCOPE_CAT_(a, b) a##b
+#define TEMPO_SCOPE_ID_(a, b) TEMPO_SCOPE_CAT_(a, b)
+
+#if TEMPO_ENABLED
+#define TEMPO_SCOPE_AT_(label_expression)                                      \
+    [[maybe_unused]] const ::tempo::scope_timing::ScopeTimer<decltype([] {})>  \
+        TEMPO_SCOPE_ID_(tempo_scope_, __COUNTER__) { label_expression }
+#define TEMPO_SCOPE()                                                          \
+    TEMPO_SCOPE_AT_(::std::source_location::current().function_name())
+#define TEMPO_SCOPE_NAMED(name) TEMPO_SCOPE_AT_(name)
+#else
+// Nothing is declared, so the statics never exist and the block is untouched.
+// sizeof keeps a named argument counted as used without evaluating it.
+#define TEMPO_SCOPE() ((void)0)
+#define TEMPO_SCOPE_NAMED(name) ((void)sizeof(name))
+#endif
+
 namespace tempo{
 
 using CallCount =  std::uint64_t;
@@ -365,14 +382,21 @@ inline void add_metric(RowFetcher fetcher, Resetter resetter) {
     reg.resetters.push_back(resetter);
 }
 
-inline void print(std::ostream& out = std::cout) {
+// Every registered metric's row, in registration order and including the ones
+// that were never called. print() is this plus filtering, sorting and layout;
+// anything that wants the numbers rather than the table should read this, since
+// the table's spelling is compiler-dependent and not meant to be parsed.
+inline std::vector<Row> collect() {
     std::vector<Row> rows;
-    {
-        Registry& reg = registry();
-        const std::lock_guard<std::mutex> guard{reg.mutex};
-        rows.reserve(reg.fetchers.size());
-        for (const RowFetcher fetch : reg.fetchers) { rows.push_back(fetch()); }
-    }
+    Registry& reg = registry();
+    const std::lock_guard<std::mutex> guard{reg.mutex};
+    rows.reserve(reg.fetchers.size());
+    for (const RowFetcher fetch : reg.fetchers) { rows.push_back(fetch()); }
+    return rows;
+}
+
+inline void print(std::ostream& out = std::cout) {
+    std::vector<Row> rows = collect();
 
     std::erase_if(rows, [](const Row& row) { return row.calls == 0; });
     std::ranges::sort(rows, [](const auto& left, const auto& right) {
@@ -438,6 +462,170 @@ inline void at_exit(std::ostream& out = std::cout) {
 
 } // namespace report
 
+
+namespace scope_timing {
+
+// The block timer behind TEMPO_SCOPE. Tag is a closure type minted by the
+// macro, unique per expansion, so every scope gets its own statics; the object
+// on the stack carries only what one entry needs and the numbers outlive it.
+//
+// Nothing here is meant to be spelled by hand -- the tag has no name you can
+// write. Read the results through tempo::report.
+template <typename Tag>
+struct ScopeTimer {
+    using Clock = std::chrono::steady_clock;
+    static_assert(Clock::is_steady, "tempo requires a monotonic clock to measure durations");
+    using Duration = std::chrono::duration<double, std::milli>;
+
+    inline static std::atomic<CallCount> entry_count{0};
+
+private:
+    inline static std::mutex stats_mutex;
+    inline static bool has_samples = false;
+    inline static CallCount timed_entries = 0;
+    inline static Duration total_duration{0};
+    inline static Duration min_duration{0};
+    inline static Duration max_duration{0};
+    inline static unsigned int max_depth = 0;
+
+    // Always the same pointer for a given tag -- the macro passes one literal or
+    // one source_location per site -- but written on every entry, so atomic
+    // rather than a plain store several threads race on.
+    inline static std::atomic<const char*> label{nullptr};
+
+    inline static thread_local unsigned int depth = 0;
+    inline static thread_local unsigned int peak_depth = 0;
+
+    // A scope re-entered by recursion must not sum intervals that contain one
+    // another, so only the outermost entry is timed. Every entry is counted.
+    static bool enter_depth() {
+        const unsigned int current = ++depth;
+        if (current == 1) { peak_depth = 1; }
+        else if (current > peak_depth) { peak_depth = current; }
+        return current == 1;
+    }
+
+public:
+    struct Snapshot {
+        CallCount entries = 0;
+        CallCount timed_entries = 0;
+        Duration total_duration{0};
+        Duration min_duration{0};
+        Duration max_duration{0};
+        unsigned int max_depth = 0;
+        bool has_samples = false;
+
+        double average_ms() const {
+            return timed_entries ? total_duration.count() / timed_entries : 0.0;
+        }
+    };
+
+    static Snapshot snapshot() {
+        const std::lock_guard<std::mutex> guard{stats_mutex};
+        return Snapshot{entry_count.load(std::memory_order_relaxed),
+                        timed_entries, total_duration, min_duration,
+                        max_duration, max_depth,       has_samples};
+    }
+
+    static void reset() {
+        const std::lock_guard<std::mutex> guard{stats_mutex};
+        entry_count.store(0, std::memory_order_relaxed);
+        has_samples = false;
+        timed_entries = 0;
+        total_duration = Duration{0};
+        min_duration = Duration{0};
+        max_duration = Duration{0};
+        max_depth = 0;
+    }
+
+    static void ensure_registered() {
+        static const bool once = [] {
+            report::add_metric(
+                [] {
+                    const Snapshot state = snapshot();
+                    const char* name = label.load(std::memory_order_relaxed);
+                    return report::Row{name ? std::string{name} : std::string{"(scope)"},
+                                       state.entries,
+                                       state.total_duration.count(),
+                                       state.min_duration.count(),
+                                       state.max_duration.count(),
+                                       state.has_samples,
+                                       state.max_depth,
+                                       state.timed_entries};
+                },
+                [] { reset(); });
+            return true;
+        }();
+        (void)once;
+    }
+
+    explicit ScopeTimer(const char* name)
+        : outermost(enter_depth()), exceptions_on_entry(std::uncaught_exceptions()) {
+        label.store(name, std::memory_order_relaxed);
+        entry_count.fetch_add(1, std::memory_order_relaxed);
+        ensure_registered();
+        // Read last, so registering and counting land outside the measurement.
+        if (outermost) { start = Clock::now(); }
+    }
+
+    // A scope timer names a region of code; copying or moving one would mean a
+    // second end for a single beginning.
+    ScopeTimer(const ScopeTimer&) = delete;
+    ScopeTimer& operator=(const ScopeTimer&) = delete;
+
+    ~ScopeTimer() {
+        // GCC reads folding a local duration into a static as a dangling store.
+        // Same false positive, same workaround, as Metrics::RecordOnExit below.
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdangling-pointer"
+#endif
+        // First thing, for the same reason start is read last.
+        const Clock::time_point stop = outermost ? Clock::now() : Clock::time_point{};
+
+        --depth;
+
+        // Left by a throw: the region did not finish, so it is not a sample.
+        if (std::uncaught_exceptions() != exceptions_on_entry) { return; }
+        if (!outermost) { return; }
+
+        const Duration duration = stop - start;
+
+        // Taken only after the clock has stopped, so it never inflates a
+        // measurement and never serialises the code being timed.
+        const std::lock_guard<std::mutex> guard{stats_mutex};
+
+        if (peak_depth > max_depth) { max_depth = peak_depth; }
+
+        ++timed_entries;
+        total_duration += duration;
+
+        const bool is_new_max = !has_samples || duration > max_duration;
+        const bool is_new_min = !has_samples || duration < min_duration;
+        if (is_new_max) { max_duration = duration; }
+        if (is_new_min) { min_duration = duration; }
+        has_samples = true;
+
+#if TEMPO_PRINT_ENABLED
+        const char* name = label.load(std::memory_order_relaxed);
+        std::cout << "[ScopeTimer] " << (name ? name : "(scope)")
+                  << " took: " << duration.count() << " ms\n";
+        std::cout << "[ScopeTimer] Entries: "
+                  << entry_count.load(std::memory_order_relaxed) << "\n";
+        std::cout << "[ScopeTimer] Total time spent: " << total_duration.count() << " ms\n";
+#endif
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
+    }
+
+private:
+    const bool outermost;
+    const int exceptions_on_entry;
+    Clock::time_point start{};
+};
+
+} // namespace scope_timing
 
 
 namespace wrapper {

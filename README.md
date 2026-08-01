@@ -35,6 +35,10 @@ whether it is const — along with call counts and timings. The wrapper returns 
 call expression directly rather than through a named local, so the return value
 is never copied or moved and even immovable return types pass through.
 
+When there is no callable to point at, `TEMPO_SCOPE()` times the block it stands
+in — one line inside a body you already have, no wrapper object and no call site
+touched. It reports into the same table as everything else.
+
 MIT licensed. Header-only, nothing to link. Requires C++20 (concepts,
 `std::source_location`, `__VA_OPT__`, `std::erase_if`, `<ranges>`).
 
@@ -117,7 +121,11 @@ spelling is not standardised. A free function prints as `tempo::Callable<f>`
 under GCC and `tempo::Callable<&f>` under Clang; one in an anonymous namespace
 becomes `{anonymous}::f` and `&(anonymous namespace)::f` respectively, and the
 name column is capped at 60 characters, so the longer Clang spelling may be
-truncated. Do not parse the report; read `snapshot()` instead.
+truncated. A bare `TEMPO_SCOPE()` is named from
+`std::source_location::function_name()`, which is unstandardised in the same way:
+`void {anonymous}::load()` under GCC, `void (anonymous namespace)::load()` under
+Clang. `TEMPO_SCOPE_NAMED` gives the same name everywhere. Do not parse the
+report; read `snapshot()` or `collect()` instead.
 
 ### What CI covers
 
@@ -195,6 +203,84 @@ and calls `source_location::current()` in its own body, so the location it
 records is the header's, not yours. Counting is unaffected — only the reported
 call site is. Use `TEMPO_PROFILE_CALL` whenever the location matters, or
 `tempo::measure` instead, which does not need it.
+
+## Timing a block: `TEMPO_SCOPE`
+
+Everything above wraps something *callable*. `TEMPO_SCOPE` goes the other way and
+times the braces it stands in — one line inside a body you already have, no
+wrapper object, no call site edited, nothing moved into another namespace:
+
+```cpp
+void render_frame() {
+    TEMPO_SCOPE();                       // row is named after the function
+    ...
+}                                        // the destructor stops the clock
+```
+
+It is the only form that reaches code with no callable to point at: a
+constructor or destructor body, a virtual override called through a base
+pointer, one branch, one loop body, half of a function, `main` itself.
+
+**Use `TEMPO_SCOPE_NAMED` for two scopes in the same function.** Both are
+measured correctly either way — each expansion gets its own statistics — but
+`TEMPO_SCOPE()` names its row after the *enclosing function*, so two of them
+produce two rows carrying the same label and nothing in the report tells them
+apart:
+
+```cpp
+void parse_and_write(const std::vector<std::string>& lines) {
+    { TEMPO_SCOPE_NAMED("parse"); for (const auto& line : lines) parse(line); }
+    { TEMPO_SCOPE_NAMED("write"); flush(); }
+}
+```
+
+### The destructor is the mechanism, and the statistics outlive the object
+
+The object on the stack holds only the start time; the counters are static
+members selected at compile time. So in a loop body, where the timer is
+constructed and destroyed on every pass, you get **one sample per iteration** —
+`avg` is the cost of one iteration and `max` is the worst single one:
+
+```cpp
+for (const Job& job : jobs) {
+    TEMPO_SCOPE_NAMED("job");            // 1 sample per iteration
+    process(job);
+}
+
+{
+    TEMPO_SCOPE_NAMED("all jobs");       // 1 sample for the whole loop
+    for (const Job& job : jobs) { process(job); }
+}
+```
+
+Both forms can coexist. Scopes are independent: an enclosing scope never
+suppresses an inner one. `break`, `continue` and `return` all record, because
+they are scope exits. A scope left by a *throw* is counted as entered but is not
+timed — the region never finished. A scope re-entered by recursion counts every
+entry and times only the outermost, so the total is wall clock rather than a sum
+of intervals that contain one another, and the report grows a depth column.
+
+Each expansion needs its own statistics, and the tag that provides them is
+`decltype([]{})`: every lambda *expression* has a distinct closure type, so every
+expansion names a distinct instantiation. The counters are then ordinary statics
+resolved at compile time — no runtime lookup and no hashing of a name on the way
+in. One consequence is worth knowing: a `TEMPO_SCOPE` in a function *template*
+gets one row per instantiation, while one in an inline function in a header gets
+a single row no matter how many translation units include it.
+
+Because it goes through a macro, `-DTEMPO_ENABLED=0` removes it completely: no
+object, no statics, the block left exactly as written.
+
+### What it cannot do
+
+No arguments and no return value — a block has neither, so there is no scope
+equivalent of `slowest_args()`. And it counts *block entries*, which equals a
+call count only when the scope is the first statement of a function.
+
+Overhead is two clock readings, an atomic increment and one mutex acquire per
+entry — around 30 ns here. Fine for a block that takes microseconds, and
+dominant in a tight loop over a few nanoseconds of work; time the loop from
+outside and divide instead.
 
 ## Lambdas and functors
 
@@ -312,10 +398,16 @@ tempo::Callable<fast_path>      50      0.0011      0.0000      0.0000      0.00
 
 Rows are sorted by total time, so the hot spot is the first line, and a metric
 that was never called is left out. Every metric registers itself on its first
-call. `tempo::report::at_exit()` prints the table when the program ends, and
+call, `TEMPO_SCOPE` blocks included — they share the table with the wrappers.
+`tempo::report::at_exit()` prints the table when the program ends, and
 `tempo::report::reset_all()` clears everything. Read statistics with
 `snapshot()`, which returns them all under one lock so the numbers describe the
 same moment.
+
+`tempo::report::collect()` returns the same rows as a `std::vector<Row>` instead
+of a table — including the ones that were never called — for when you want the
+numbers rather than the layout. It is the only way to read a `TEMPO_SCOPE`, whose
+tag type has no name you can write.
 
 Define `TEMPO_PRINT_ENABLED` as `1` to get a block of lines on every call
 instead — the clearer view when you are watching a handful of calls, and unusable
@@ -425,6 +517,7 @@ case, proved rather than shown — is in `tests/`.
 | `06_recursion.cpp` | counting recursive calls, and the depth gate |
 | `07_constructors.cpp` | counting object construction |
 | `08_traits.cpp` | reading a signature at compile time |
+| `09_scope.cpp` | timing a block, a loop body and a whole loop |
 
 `make matrix` compiles them all under every macro combination, `make sanitize`
 runs them under address and undefined behaviour, `make tsan` under the thread
@@ -441,7 +534,7 @@ make tsan                     # data races
 ```
 
 Each file is a separate binary, like the examples, and exits non-zero on
-failure. 126 tests, 401 checks.
+failure. 137 tests, 447 checks.
 
 | | |
 |---|---|
@@ -456,6 +549,7 @@ failure. 126 tests, 401 checks.
 | `09_constructors.cpp` | `ConstructorProfiler`, elision, move-only arguments |
 | `10_abuse.cpp` | degenerate signatures, 16 parameters, nesting, mid-run reset |
 | `11_noexcept.cpp` | the qualifier surviving the wrapper, and what capture costs |
+| `12_scope.cpp` | `TEMPO_SCOPE`: per-iteration samples, recursion, throws, threads |
 | `errors/` | 14 mistakes that must NOT compile, each with one clear message |
 
 ## Known limits
@@ -480,7 +574,17 @@ unaffected.
 
 **Short calls mostly measure tempo.** A wrapped call that returns immediately
 reports about 15 ns here, which is essentially the two clock readings around it.
-Measure work that takes longer than the instrument.
+Measure work that takes longer than the instrument. The same applies to
+`TEMPO_SCOPE` in a tight loop: at roughly 30 ns per entry it will dominate a body
+of a few nanoseconds, so time the loop from outside and divide instead.
+
+**A scope has no arguments and no return value.** `TEMPO_SCOPE` measures a region
+of code, not a call, so there is no scope equivalent of `slowest_args()` — the
+thing tempo is otherwise for. It also counts block *entries*, which equal a call
+count only when the scope is the first statement of a function. And its tag type
+has no name you can write, so its numbers are readable only through
+`tempo::report::collect()` or the printed table, never through a `snapshot()` you
+call yourself.
 
 **`TEMPO_ENABLED=0` only neutralises the macros.** Names introduced by
 `TEMPO_INSTRUMENT` and `TEMPO_RECURSIVE` collapse to plain function pointers; a
@@ -499,9 +603,11 @@ does not.
 
 **No percentiles, no histograms, no call graph.** Samples are not retained, so
 the summary has totals and extremes and nothing else, and only what you name is
-measured — nothing is discovered for you, inlined callees included. tempo answers
-"which input was slow", not "where is the time going" — that is a sampling
-profiler's job, and the two go together well.
+measured — nothing is discovered for you, inlined callees included. Scope rows are
+inclusive time per site, not a tree: a scope containing a call into another
+scoped function contributes to both rows, since the depth gate only suppresses
+re-entry of the *same* scope. tempo answers "which input was slow", not "where is
+the time going" — that is a sampling profiler's job, and the two go together well.
 
 **Linux, GCC and Clang are what is verified.** macOS and MSVC have code paths and
 no CI behind them.
