@@ -29,6 +29,17 @@ void nightly_job() {
 fastest call's arguments, the file and line of the last call — all read under one
 lock, so the numbers describe the same moment.
 
+One slow call is an anecdote, so a metric keeps the ten slowest it has seen
+rather than only the worst, arguments and call site included. Read them with
+`worst_calls()`, slowest first, and the pattern across them is the answer:
+
+```cpp
+for (const auto& call : query.worst_calls()) {
+    const auto& [sql, limit] = call.args;
+    std::cout << call.duration.count() << " ms  limit=" << limit << "  " << sql << "\n";
+}
+```
+
 Point tempo at a function or method pointer and you also get a type that knows
 the signature — return type, parameter types, arity, whether it is a member,
 whether it is const — along with call counts and timings. The wrapper returns the
@@ -62,8 +73,9 @@ clang++ -std=c++20 -O2 -I/path/to/tempo your.cpp -o your_program
 cl /std:c++20 /Zc:preprocessor /EHsc /O2 /I path\to\tempo your.cpp
 ```
 
-`/Zc:preprocessor` is **required** on MSVC if you use `TEMPO_PROFILE_CALL`: it
-uses `__VA_OPT__`, which the traditional MSVC preprocessor does not implement.
+`/Zc:preprocessor` is **required** on MSVC if you use `TEMPO_PROFILE_CALL`,
+`TEMPO_INSTRUMENT` or `TEMPO_CALLABLE_METRICS`: they use `__VA_OPT__`, which the
+traditional MSVC preprocessor does not implement.
 `std::source_location` needs VS 2019 16.10 or newer.
 
 `-pthread` is required wherever your standard library needs it for `<mutex>` and
@@ -87,7 +99,7 @@ major number stays at `0` while the API is still free to change.
 
 ### Compiler flags
 
-No compiler flag switches anything tempo does — the three macros below are the
+No compiler flag switches anything tempo does — the four macros below are the
 only switches it has. What the flags people ask about were checked to do:
 
 | Flag | Effect |
@@ -98,12 +110,13 @@ only switches it has. What the flags people ask about were checked to do:
 | `-flto` | No effect on correctness. |
 | `-std=c++23` | Builds and passes the suite. C++20 is the floor, not a ceiling. |
 
-### The three macros are the switches, and they are ODR-sensitive
+### The four macros are the switches, and they are ODR-sensitive
 
-`TEMPO_ENABLED`, `TEMPO_PRINT_ENABLED` and `TEMPO_COUNT_RECURSION` change the
-bodies of inline functions and templates, and `TEMPO_ENABLED` changes the *type*
-an instrumented name has. Defining them differently in two translation units of
-the same program is an ODR violation, and the linker will not warn you.
+`TEMPO_ENABLED`, `TEMPO_PRINT_ENABLED`, `TEMPO_COUNT_RECURSION` and
+`TEMPO_WORST_CALLS` change the bodies of inline functions and templates, and
+`TEMPO_ENABLED` and `TEMPO_WORST_CALLS` change the *type* an instrumented name
+has. Defining them differently in two translation units of the same program is
+an ODR violation, and the linker will not warn you.
 
 Set them on the compiler command line so every translation unit agrees:
 
@@ -142,6 +155,53 @@ C++23.
 for both exist and are written against the documented behaviour, and the macOS
 build is expected to work, but nothing verifies either. The macOS job is still
 in `.github/workflows/ci.yml`, commented out, ready to be switched back on.
+
+## The slowest calls, not just the slowest call
+
+`slowest_args()` answers "what was the single worst input", and a single sample
+can be a cold cache or a scheduler hiccup rather than an expensive input. The
+ranking answers the more useful question — which inputs are *consistently* slow:
+
+```
+the 5 slowest of 8 calls
+
+  36.267 ms  limit= 9000  select * from orders join items join shi
+  30.336 ms  limit= 7500  select * from audit_log
+  20.265 ms  limit= 5000  select * from orders join items using (o
+  10.270 ms  limit= 2500  select * from items where sku like '%-x'
+   2.297 ms  limit=  100  select id from orders where status = 'op
+```
+
+Each entry carries `duration`, `args` and the `location` of the call, and
+`worst_calls()` returns only the entries actually filled — shorter than the
+capacity until that many calls have been timed, empty before the first.
+
+**The capacity is a template argument, defaulting to 10.** Write it out to
+choose your own, in whichever form declares the metric:
+
+```cpp
+tempo::CallableMetrics<&run_query, 25> query;          // 25 instead of 10
+auto parse = tempo::measure<25>([](std::string_view line) { ... });
+TEMPO_INSTRUMENT(impl::render_page, render_page, 25);
+```
+
+or set `TEMPO_WORST_CALLS` on the command line to change the default everywhere.
+It is a fourth ODR-sensitive switch for the same reason as the other three — it
+changes the *type* an instrumented name has — so set it for the whole program,
+never per translation unit.
+
+A capacity of `0` stores no ranking and costs nothing; `worst_calls()` then does
+not compile, and says so in one sentence. `slowest_args()` and `fastest_args()`
+are unaffected by the capacity, at `0` or anywhere else.
+
+The ranking is not a second copy of the slowest arguments — its head *is* the
+slowest call, and `slowest_args()` reads it from there — so turning it on costs
+nothing in copies for the calls that make it in, and one comparison against the
+tail for the calls that do not. It shares the statistics lock and the snapshot,
+so `snapshot().worst_calls()` gives you the ranking and the totals from the same
+moment. Argument capture is a separate question: a callable whose parameters
+cannot be stored still ranks its slowest calls, with durations and call sites
+and an empty `args`.
 
 ## Instrumenting without touching call sites
 
@@ -409,6 +469,11 @@ of a table — including the ones that were never called — for when you want t
 numbers rather than the layout. It is the only way to read a `TEMPO_SCOPE`, whose
 tag type has no name you can write.
 
+The ranking of slowest calls is not in either of those: a row is one line of
+totals, and the arguments it would have to print are of a type the report knows
+nothing about. Read it from the metric, with `worst_calls()` or
+`snapshot().worst_calls()`.
+
 Define `TEMPO_PRINT_ENABLED` as `1` to get a block of lines on every call
 instead — the clearer view when you are watching a handful of calls, and unusable
 on anything called often. It is off by default because the printing happens under
@@ -451,6 +516,7 @@ Each message names what was wrong and what to write instead. The cases covered:
 | `tempo::Metrics<MyLambda>` | names the wrapper type that was meant |
 | wrong arguments at a call site | reminds you the instance comes first for a method |
 | `slowest_args()` with unstorable args | explains which parameter disabled capture |
+| `worst_calls()` on a metric with capacity `0` | says how to give it one |
 | `ConstructorProfiler<int>` | says it needs a class |
 
 The one-error guarantee is enforced, not hoped for: `tests/errors` compiles
@@ -518,6 +584,7 @@ case, proved rather than shown — is in `tests/`.
 | `07_constructors.cpp` | counting object construction |
 | `08_traits.cpp` | reading a signature at compile time |
 | `09_scope.cpp` | timing a block, a loop body and a whole loop |
+| `10_worst.cpp` | the ranking of slowest calls, and the pattern across them |
 
 `make matrix` compiles them all under every macro combination, `make sanitize`
 runs them under address and undefined behaviour, `make tsan` under the thread
@@ -534,7 +601,7 @@ make tsan                     # data races
 ```
 
 Each file is a separate binary, like the examples, and exits non-zero on
-failure. 137 tests, 447 checks.
+failure. 146 tests, 492 checks.
 
 | | |
 |---|---|
@@ -550,7 +617,8 @@ failure. 137 tests, 447 checks.
 | `10_abuse.cpp` | degenerate signatures, 16 parameters, nesting, mid-run reset |
 | `11_noexcept.cpp` | the qualifier surviving the wrapper, and what capture costs |
 | `12_scope.cpp` | `TEMPO_SCOPE`: per-iteration samples, recursion, throws, threads |
-| `errors/` | 14 mistakes that must NOT compile, each with one clear message |
+| `13_worst.cpp` | the ranking: ordering, capacity, every arity, threads |
+| `errors/` | 15 mistakes that must NOT compile, each with one clear message |
 
 ## Known limits
 
@@ -563,7 +631,18 @@ is diagnosed with a sentence rather than left to the compiler.
 captured arguments are static members of the wrapper type, so two wrapper objects
 over the same function share one set of numbers — and every
 `std::function<int(int)>` in a program is the same type. Wrap the underlying
-lambda instead.
+lambda instead. The ranking's capacity is part of that type too, so
+`CallableMetrics<&f>` and `CallableMetrics<&f, 25>` are two metrics over one
+function, with separate numbers and two rows in the report. Pick a capacity per
+function and write it in one place.
+
+**The ranking retains arguments, so a large capacity costs memory.** Each entry
+holds a decayed copy of every parameter, so the footprint is the capacity times
+the argument size, per metric, for the life of the program — a function taking a
+`std::string` at the default of 10 keeps ten of those strings alive. Lower the
+capacity, or set it to `0`, for metrics whose arguments are large. Inserting is
+an insertion sort over at most the capacity, so a very large one also makes the
+qualifying calls (not the rejected ones) proportionally slower to record.
 
 **Argument capture needs copyable, default-constructible parameters.** A
 move-only parameter such as `std::unique_ptr`, a reference member, or a type with
@@ -601,8 +680,9 @@ equivalent of the `TEMPO_INSTRUMENT` seam for it. And `Profiler` needs
 `TEMPO_PROFILE_CALL` to report your call site instead of the header's; `Metrics`
 does not.
 
-**No percentiles, no histograms, no call graph.** Samples are not retained, so
-the summary has totals and extremes and nothing else, and only what you name is
+**No percentiles, no histograms, no call graph.** Only the slowest N calls are
+retained and nothing in the middle of the distribution is, so the summary has
+totals, extremes and that ranking and nothing else, and only what you name is
 measured — nothing is discovered for you, inlined callees included. Scope rows are
 inclusive time per site, not a tree: a scope containing a call into another
 scoped function contributes to both rows, since the depth gate only suppresses

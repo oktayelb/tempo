@@ -39,14 +39,18 @@ matrix:
 		"-DTEMPO_PRINT_ENABLED=0" \
 		"-DTEMPO_PRINT_ENABLED=0 -DTEMPO_COUNT_RECURSION=1" \
 		"-DTEMPO_PRINT_ENABLED=1" \
-		"-DTEMPO_PRINT_ENABLED=1 -DTEMPO_COUNT_RECURSION=1" ; do \
+		"-DTEMPO_PRINT_ENABLED=1 -DTEMPO_COUNT_RECURSION=1" \
+		"-DTEMPO_PRINT_ENABLED=0 -DTEMPO_WORST_CALLS=0" \
+		"-DTEMPO_PRINT_ENABLED=0 -DTEMPO_WORST_CALLS=1" ; do \
 		echo ""; \
 		echo "===================================================="; \
 		echo "  $(CXX) $$defs"; \
 		echo "===================================================="; \
 		$(MAKE) --no-print-directory clean >/dev/null; \
-		$(MAKE) --no-print-directory run DEFINES="$$defs" \
-			| grep -E "^(PASS|FAIL|ALL|SOME|  FAIL|    )" || failed=1; \
+		if ! $(MAKE) --no-print-directory run DEFINES="$$defs" > matrix.log 2>&1; \
+			then failed=1; fi; \
+		grep -E "^(PASS|FAIL|ALL|SOME|  FAIL|    )" matrix.log; \
+		rm -f matrix.log; \
 	done; \
 	$(MAKE) --no-print-directory clean >/dev/null; \
 	exit $$failed

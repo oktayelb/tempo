@@ -21,10 +21,13 @@
 #include <iostream>
 #include <type_traits>
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <concepts>
+#include <span>
 #include <exception>
 #include <functional>
 #include <iomanip>
@@ -45,10 +48,19 @@
 #define TEMPO_ENABLED 1
 #endif
 
+// How many of the slowest calls each metric keeps, arguments included.
+// 0 stores none and costs nothing; the single fastest/slowest pair is kept
+// either way. Like the other switches this changes a type, so it is ODR-
+// sensitive: set it on the command line, not per translation unit.
+#ifndef TEMPO_WORST_CALLS
+#define TEMPO_WORST_CALLS 10
+#endif
+
 #if TEMPO_ENABLED
-#define TEMPO_INSTRUMENT(function, alias) inline ::tempo::CallableMetrics<&function> alias{}
+#define TEMPO_INSTRUMENT(function, alias, ...) \
+    inline ::tempo::CallableMetrics<&function __VA_OPT__(,) __VA_ARGS__> alias{}
 #else
-#define TEMPO_INSTRUMENT(function, alias) inline constexpr auto alias = &function
+#define TEMPO_INSTRUMENT(function, alias, ...) inline constexpr auto alias = &function
 #endif
 
 #ifndef TEMPO_COUNT_RECURSION
@@ -72,7 +84,8 @@
 #define TEMPO_FUNCTION(function) ::tempo::Function<&function>
 #define TEMPO_METHOD(method) ::tempo::Method<&method>
 #define TEMPO_CALLABLE_PROFILER(callable) ::tempo::CallableProfiler<&callable>
-#define TEMPO_CALLABLE_METRICS(callable) ::tempo::CallableMetrics<&callable>
+#define TEMPO_CALLABLE_METRICS(callable, ...) \
+    ::tempo::CallableMetrics<&callable __VA_OPT__(,) __VA_ARGS__>
 #define TEMPO_PROFILE_CALL(profiler, ...) (profiler).call_at(::std::source_location::current() __VA_OPT__(,) __VA_ARGS__)
 
 #define TEMPO_SCOPE_CAT_(a, b) a##b
@@ -255,6 +268,20 @@ struct UnsupportedCallable {
     "  Timing, call counts and the report are unaffected; only argument capture\n"  \
     "  switches itself off. Query it first with:\n"                                 \
     "      if constexpr (m.tracks_args) { ... m.slowest_args() ... }"
+
+
+#define TEMPO_NO_WORST_CALLS_MESSAGE                                           \
+    "tempo: worst_calls() is unavailable -- this metric keeps no ranking.\n"   \
+    "  The number of slowest calls a metric retains is a template argument,\n" \
+    "  and this one is 0, so nothing is ranked and there is nothing to\n"      \
+    "  return. Either TEMPO_WORST_CALLS was defined as 0, or the count was\n"  \
+    "  written out as 0 at the declaration.\n"                                 \
+    "  Fix: give the metric a count of at least 1 --\n"                        \
+    "      tempo::CallableMetrics<&run_query, 10> query;\n"                    \
+    "      auto parse = tempo::measure<10>(my_lambda);\n"                      \
+    "      TEMPO_INSTRUMENT(impl::render_page, render_page, 10);\n"            \
+    "  slowest_args() and fastest_args() are unaffected -- the single\n"       \
+    "  fastest and slowest call are kept whatever the count is."
 
 
 #define TEMPO_UNREADABLE_FUNCTOR_MESSAGE                                       \
@@ -1061,8 +1088,8 @@ using CallOperator = std::conditional_t<
 } // namespace call_operators
 
 
-template <typename WrapperType>
-struct Metrics : call_operators::CallOperator<Metrics<WrapperType>,
+template <typename WrapperType, std::size_t WorstCalls = TEMPO_WORST_CALLS>
+struct Metrics : call_operators::CallOperator<Metrics<WrapperType, WorstCalls>,
                                       typename wrapper::WrapperOrStandIn<WrapperType>::Type> {
 
     static_assert(wrapper::TempoWrapper<WrapperType> ||
@@ -1076,7 +1103,8 @@ struct Metrics : call_operators::CallOperator<Metrics<WrapperType>,
     using ArgsType   = typename CallableType::ArgsType;
     using SourceLocation = std::source_location;
 
-    using CallOperatorBase = call_operators::CallOperator<Metrics<WrapperType>, CallableType>;
+    using CallOperatorBase =
+        call_operators::CallOperator<Metrics<WrapperType, WorstCalls>, CallableType>;
     using CallOperatorBase::operator();
 
     using Clock = std::chrono::steady_clock;
@@ -1095,12 +1123,39 @@ struct Metrics : call_operators::CallOperator<Metrics<WrapperType>,
         typename storage::DecayedTuple<ArgsType>::Type,
         std::tuple<>>;
 
+    // How many of the slowest calls this metric ranks. Independent of
+    // tracks_args: with capture off the ranking still carries durations and
+    // call sites, and `args` is the empty tuple StoredArgsType already is.
+    static constexpr std::size_t worst_capacity = WorstCalls;
+    static constexpr bool ranks_worst = WorstCalls > 0;
+
+    // One retained call. Ranked by duration, slowest first.
+    struct WorstCall {
+        Duration duration{0};
+        StoredArgsType args{};
+        SourceLocation location{};
+    };
+
+    // Ranking overwrites entries, so a noexcept callable must be able to copy
+    // and shift one without throwing. ArgsAreNothrowStorable already demands
+    // exactly that of every parameter; this proves it survived the wrapping.
+    static_assert(!is_noexcept || !ranks_worst ||
+                      (std::is_nothrow_copy_assignable_v<WorstCall> &&
+                       std::is_nothrow_move_assignable_v<WorstCall>),
+        "tempo: internal -- ranking the slowest calls of a noexcept callable "
+        "must not throw.");
+
     inline static auto& call_count = CallableType::call_count;
 
 private:
 
     inline static std::mutex stats_mutex;
     inline static bool has_samples = false;
+
+    // Sorted descending over [0, worst_size). A zero-length array is a valid
+    // std::array, so an arity of 0 or a capacity of 0 both stay well-formed.
+    inline static std::array<WorstCall, WorstCalls> worst{};
+    inline static std::size_t worst_size = 0;
 
 
     inline static CallCount timed_calls = 0;
@@ -1143,17 +1198,28 @@ public:
 
         CallCount timed_calls = 0;
 
+        // Read under the same lock as everything above, so the ranking and the
+        // totals describe the same moment.
+        std::array<WorstCall, WorstCalls> worst{};
+        std::size_t worst_size = 0;
+
         double average_ms() const {
             return timed_calls ? total_duration.count() / timed_calls : 0.0;
+        }
+
+        // Only the entries actually filled, slowest first.
+        std::span<const WorstCall> worst_calls() const {
+            return std::span<const WorstCall>{worst.data(), worst_size};
         }
     };
 
     static Snapshot snapshot() {
         const std::lock_guard<std::mutex> guard{stats_mutex};
         return Snapshot{call_count.load(std::memory_order_relaxed),
-                        total_duration, min_duration, max_duration,
-                        min_args,       max_args,     last_call_location,
-                        has_samples,    max_depth,    timed_calls};
+                        total_duration,    min_duration,      max_duration,
+                        min_args,          slowest_args_ref(), last_call_location,
+                        has_samples,       max_depth,         timed_calls,
+                        worst,             worst_size};
     }
 
     static SourceLocation get_last_call_location() {
@@ -1192,7 +1258,8 @@ public:
         max_args = StoredArgsType{};
         last_call_location = SourceLocation{};
         max_depth = 0;
-
+        worst = {};
+        worst_size = 0;
     }
 
 
@@ -1251,10 +1318,60 @@ public:
             "tempo: slowest_args() is unavailable -- this callable's arguments are not stored.\n"
             TEMPO_ARGS_NOT_STORED_MESSAGE);
         const std::lock_guard<std::mutex> guard{stats_mutex};
-        return max_args;
+        return slowest_args_ref();
+    }
+
+    // The slowest calls seen, slowest first. Shorter than worst_capacity until
+    // that many have been timed; empty before the first one.
+    static std::vector<WorstCall> worst_calls() {
+        static_assert(ranks_worst, TEMPO_NO_WORST_CALLS_MESSAGE);
+        const std::lock_guard<std::mutex> guard{stats_mutex};
+        return std::vector<WorstCall>{worst.begin(), worst.begin() + worst_size};
     }
 
 private:
+
+    // Claims this call's place in the ranking and returns the slot it earned,
+    // or nullptr if it was not slow enough. The arguments are left to the
+    // caller so it can hand the single snapshot to its last consumer by move.
+    //
+    // Called under stats_mutex. Ranking is rare once the table fills, so the
+    // common path is the one comparison against the tail that rejects.
+    static WorstCall* rank_worst(Duration duration, SourceLocation location) noexcept {
+        if constexpr (!ranks_worst) {
+            return nullptr;
+        }
+        else {
+            if (worst_size == worst_capacity &&
+                !(duration > worst[worst_capacity - 1].duration)) {
+                return nullptr;
+            }
+
+            // Displace the tail once full; otherwise grow into the next slot.
+            std::size_t slot = worst_size < worst_capacity ? worst_size++
+                                                           : worst_capacity - 1;
+            for (; slot > 0 && duration > worst[slot - 1].duration; --slot) {
+                worst[slot] = std::move(worst[slot - 1]);
+            }
+
+            worst[slot].duration = duration;
+            worst[slot].location = location;
+            return &worst[slot];
+        }
+    }
+
+    // The slowest call's arguments. With a ranking that is just its head --
+    // a new maximum always sorts to slot 0 -- so nothing is stored twice.
+    // Called under stats_mutex.
+    static const StoredArgsType& slowest_args_ref() noexcept {
+        if constexpr (ranks_worst) {
+            return worst_size > 0 ? worst[0].args : max_args;   // empty before the first call
+        }
+        else {
+            return max_args;
+        }
+    }
+
     template <typename Instance, typename... MethodArgs>
     static StoredArgsType make_args_snapshot_without_instance(const Instance&, const MethodArgs&... arg) {
         return StoredArgsType{arg...};
@@ -1306,13 +1423,31 @@ private:
             if (is_new_min) { min_duration = duration; }
             has_samples = true;
 
+            WorstCall* const ranked = rank_worst(duration, location);
+
+            // One snapshot, up to two homes: everything but the last consumer
+            // copies. With a ranking the slowest call lives in slot 0, so
+            // max_args is not a second place to put it.
             if constexpr (tracks_args) {
-                if (is_new_max && is_new_min) {
-                    max_args = snapshot;
-                    min_args = std::move(snapshot);
+                if constexpr (ranks_worst) {
+                    if (ranked != nullptr && is_new_min) {
+                        ranked->args = snapshot;
+                        min_args = std::move(snapshot);
+                    }
+                    else if (ranked != nullptr) { ranked->args = std::move(snapshot); }
+                    else if (is_new_min)        { min_args = std::move(snapshot); }
                 }
-                else if (is_new_max) { max_args = std::move(snapshot); }
-                else if (is_new_min) { min_args = std::move(snapshot); }
+                else {
+                    if (is_new_max && is_new_min) {
+                        max_args = snapshot;
+                        min_args = std::move(snapshot);
+                    }
+                    else if (is_new_max) { max_args = std::move(snapshot); }
+                    else if (is_new_min) { min_args = std::move(snapshot); }
+                }
+            }
+            else {
+                (void)ranked;
             }
 
 #if TEMPO_PRINT_ENABLED
@@ -1337,8 +1472,8 @@ private:
     };
 
 
-template <auto CallableValue>
-using CallableMetrics = Metrics<Callable<CallableValue>>;
+template <auto CallableValue, std::size_t WorstCalls = TEMPO_WORST_CALLS>
+using CallableMetrics = Metrics<Callable<CallableValue>, WorstCalls>;
 
 
 template <typename F>
@@ -1353,10 +1488,12 @@ auto profile(F&& target) {
     return Profiler<Functor<std::decay_t<F>>>{wrap(std::forward<F>(target))};
 }
 
-template <typename F>
+// The count comes first so it can be written without naming the closure type:
+//     auto parse = tempo::measure<25>(my_lambda);
+template <std::size_t WorstCalls = TEMPO_WORST_CALLS, typename F>
 requires callable_traits::CallableObject<std::decay_t<F>>
 auto measure(F&& target) {
-    return Metrics<Functor<std::decay_t<F>>>{{}, wrap(std::forward<F>(target))};
+    return Metrics<Functor<std::decay_t<F>>, WorstCalls>{{}, wrap(std::forward<F>(target))};
 }
 
 
@@ -1378,13 +1515,13 @@ auto profile(F&&) {
     return Profiler<errors::UnsupportedCallable>{{}};
 }
 
-template <typename F>
+template <std::size_t WorstCalls = TEMPO_WORST_CALLS, typename F>
 requires (!callable_traits::CallableObject<std::decay_t<F>>)
 auto measure(F&&) {
     static_assert(errors::always_false<F>,
         "tempo::measure: this argument is not a callable object tempo can read.\n"
         TEMPO_NOT_A_CALLABLE_OBJECT_MESSAGE);
-    return Metrics<errors::UnsupportedCallable>{{}, {}};
+    return Metrics<errors::UnsupportedCallable, WorstCalls>{{}, {}};
 }
 namespace construction {
 
