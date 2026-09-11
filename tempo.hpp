@@ -107,13 +107,6 @@ concept FunctionPointer =
     std::is_pointer_v<decltype(Value)> &&
     std::is_function_v<std::remove_pointer_t<decltype(Value)>>;
 
-template <auto Value>
-concept MethodPointer = std::is_member_function_pointer_v<decltype(Value)>;
-
-template <auto Value>
-concept CallablePointer = FunctionPointer<Value> || MethodPointer<Value>;
-
-
 template <typename F>
 concept CallableObject =
     std::is_class_v<F> &&
@@ -742,7 +735,7 @@ struct MethodImpl<ret (ClassName::*)(args...) const noexcept, method>
 } 
 
 template<auto MethodValue>
-requires callable_concepts::MethodPointer<MethodValue>
+requires std::is_member_function_pointer_v<decltype(MethodValue)>
 struct Method : method_binding::MethodImpl<decltype(MethodValue), MethodValue> {};
 
 
@@ -760,7 +753,7 @@ struct Implementation<CallableValue> {
 };
 
 template<auto CallableValue>
-requires callable_concepts::MethodPointer<CallableValue>
+requires std::is_member_function_pointer_v<decltype(CallableValue)>
 struct Implementation<CallableValue> {
     using Type = Method<CallableValue>;
 };
@@ -770,7 +763,8 @@ struct Implementation<CallableValue> {
 template<auto CallableValue>
 struct Callable : callable_matcher::Implementation<CallableValue>::Type {
 
-    static_assert(callable_concepts::CallablePointer<CallableValue>,
+    static_assert(callable_concepts::FunctionPointer<CallableValue> ||
+                  std::is_member_function_pointer_v<decltype(CallableValue)>,
         TEMPO_NOT_A_CALLABLE_POINTER_MESSAGE);
 
 
@@ -881,7 +875,7 @@ template <auto V>
     requires callable_concepts::FunctionPointer<V>
 inline constexpr bool is_tempo_wrapper_template<Function<V>> = true;
 template <auto V>
-    requires callable_concepts::MethodPointer<V>
+    requires std::is_member_function_pointer_v<decltype(V)>
 inline constexpr bool is_tempo_wrapper_template<Method<V>> = true;
 template <typename F>
 inline constexpr bool is_tempo_wrapper_template<Functor<F>> = true;

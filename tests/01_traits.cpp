@@ -116,8 +116,8 @@ static_assert(std::is_same_v<tempo::Functor<std::function<int(int)>>::ReturnType
 
 // ---------- the concepts reject what they should ----------
 static_assert(tempo::callable_traits::FunctionPointer<&free_add>);
-static_assert(!tempo::callable_traits::MethodPointer<&free_add>);
-static_assert(tempo::callable_traits::MethodPointer<&Service::handle>);
+static_assert(!std::is_member_function_pointer_v<decltype(&free_add)>);
+static_assert(std::is_member_function_pointer_v<decltype(&Service::handle)>);
 static_assert(!tempo::callable_traits::FunctionPointer<&Service::handle>);
 static_assert(tempo::callable_traits::CallablePointer<&free_add>);
 static_assert(tempo::callable_traits::CallablePointer<&Service::handle>);
