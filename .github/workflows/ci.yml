@@ -6,161 +6,160 @@ on:
   pull_request:
   workflow_dispatch:
 
-# A second push to the same branch cancels the first: nothing here needs to
-# finish for an old commit.
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  # The main matrix. tempo's behaviour is decided at compile time by three
-  # macros, so "it builds and passes" only means something if each combination
-  # is built and run.
-  tests:
-    name: tests (${{ matrix.compiler }}, ${{ matrix.label }})
-    runs-on: ubuntu-latest
+  portable:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        compiler: [g++, clang++]
         include:
-          - label: default
-            defines: -DTEMPO_PRINT_ENABLED=0
-          - label: recursion-counted
-            defines: -DTEMPO_PRINT_ENABLED=0 -DTEMPO_COUNT_RECURSION=1
-          - label: per-call-printing
-            defines: -DTEMPO_PRINT_ENABLED=1
-        exclude: []
+          - name: Ubuntu / GCC / C++20
+            os: ubuntu-latest
+            cmake_options: -DCMAKE_CXX_COMPILER=g++
+            standard: 20
+          - name: Ubuntu / Clang / C++20
+            os: ubuntu-latest
+            cmake_options: -DCMAKE_CXX_COMPILER=clang++
+            standard: 20
+          - name: Ubuntu / GCC / C++23
+            os: ubuntu-latest
+            cmake_options: -DCMAKE_CXX_COMPILER=g++
+            standard: 23
+          - name: macOS / Apple Clang / C++20
+            os: macos-latest
+            cmake_options: -DCMAKE_CXX_COMPILER=clang++
+            standard: 20
+          - name: Windows / MSVC / C++20
+            os: windows-latest
+            cmake_options: -G "Visual Studio 17 2022" -A x64 -DTEMPO_BUILD_DIAGNOSTICS=OFF
+            standard: 20
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Show compiler version
-        run: ${{ matrix.compiler }} --version
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_CXX_STANDARD=${{ matrix.standard }}
+          ${{ matrix.cmake_options }}
 
-      - name: Build and run the test suite
-        working-directory: tests
-        run: make run CXX=${{ matrix.compiler }} DEFINES="${{ matrix.defines }}"
+      - name: Build tests and examples
+        run: cmake --build build --config Release --parallel
 
-  # The compile-failure suite. Every file under tests/errors is supposed to
-  # fail to build; what is verified is that it fails with tempo's own message and
-  # with exactly ONE error. Both compilers are run because they disagree about
-  # which unsupported shapes they will deduce -- that disagreement is precisely
-  # what this job exists to pin down.
-  errors:
-    name: errors (${{ matrix.compiler }})
+      - name: Run CTest suite
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Install tempo
+        run: cmake --install build --config Release --prefix install
+
+      - name: Build and run an installed-package consumer
+        run: >
+          cmake -S tests/consumer -B consumer-build
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_PREFIX_PATH=${{ github.workspace }}/install
+
+      - name: Verify installed-package consumer
+        run: cmake --build consumer-build --config Release --parallel
+
+      - name: Run installed-package consumer
+        run: ctest --test-dir consumer-build -C Release --output-on-failure
+
+  configuration:
+    name: Ubuntu / GCC / ${{ matrix.name }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        compiler: [g++, clang++]
+        include:
+          - name: recursion counted
+            options: -DTEMPO_COUNT_RECURSION=1
+          - name: per-call printing
+            options: -DTEMPO_PRINT_ENABLED=1
+          - name: no worst-call ranking
+            options: -DTEMPO_WORST_CALLS=0
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check that unsupported usage fails with one readable message
-        working-directory: tests
-        run: make errors CXX=${{ matrix.compiler }}
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_CXX_COMPILER=g++
+          ${{ matrix.options }}
 
-  # The examples are documentation, and documentation that does not compile is
-  # worse than none. They are also the only place TEMPO_ENABLED=0 is exercised
-  # end to end, since the tests deliberately inspect wrapper types.
-  examples:
-    name: examples (${{ matrix.compiler }})
+      - name: Build and run tests and examples
+        run: cmake --build build --parallel && ctest --test-dir build --output-on-failure
+
+  disabled-instrumentation:
+    name: Ubuntu / GCC / instrumentation disabled
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        compiler: [g++, clang++]
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build and run the examples
-        working-directory: examples
-        run: make run CXX=${{ matrix.compiler }}
+      - name: Configure examples without instrumentation
+        run: >
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_CXX_COMPILER=g++
+          -DTEMPO_BUILD_TESTS=OFF
+          -DTEMPO_ENABLED=0
 
-      - name: Compile the examples under every macro combination
-        working-directory: examples
-        run: make matrix CXX=${{ matrix.compiler }}
+      - name: Build examples
+        run: cmake --build build --parallel
 
-  # The depth counter, the argument snapshots and the shared statistics are
-  # exactly the kind of state these catch. clang is used because its sanitizer
-  # runtimes ship with the compiler.
   sanitizers:
-    name: ${{ matrix.sanitizer }}
+    name: Ubuntu / Clang / ${{ matrix.name }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         include:
-          - sanitizer: address+undefined
+          - name: AddressSanitizer + UBSan
             flags: -fsanitize=address,undefined -fno-omit-frame-pointer
-          - sanitizer: thread
+          - name: ThreadSanitizer
             flags: -fsanitize=thread
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Run the suite under ${{ matrix.sanitizer }}
-        working-directory: tests
+      - name: Configure
+        run: >
+          cmake -S . -B build
+          -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_CXX_COMPILER=clang++
+          -DCMAKE_CXX_FLAGS="${{ matrix.flags }}"
+          -DCMAKE_EXE_LINKER_FLAGS="${{ matrix.flags }}"
+
+      - name: Build and run default configuration
         env:
-          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
-          TSAN_OPTIONS: halt_on_error=1
-        run: |
-          make run CXX=clang++ \
-            CXXFLAGS="-std=c++20 -Wall -Wextra -Werror -O1 -g -pthread -I.. -I. ${{ matrix.flags }}"
+          ASAN_OPTIONS: ${{ matrix.name == 'AddressSanitizer + UBSan' && 'detect_leaks=0:abort_on_error=1' || '' }}
+          UBSAN_OPTIONS: ${{ matrix.name == 'AddressSanitizer + UBSan' && 'print_stacktrace=1:halt_on_error=1' || '' }}
+          TSAN_OPTIONS: ${{ matrix.name == 'ThreadSanitizer' && 'halt_on_error=1' || '' }}
+        run: cmake --build build --parallel && ctest --test-dir build --output-on-failure
 
-      - name: Run again with recursion counted
-        working-directory: tests
+      - name: Configure recursion-counted suite
+        run: >
+          cmake -S . -B recursion-build
+          -DCMAKE_BUILD_TYPE=Debug
+          -DCMAKE_CXX_COMPILER=clang++
+          -DCMAKE_CXX_FLAGS="${{ matrix.flags }}"
+          -DCMAKE_EXE_LINKER_FLAGS="${{ matrix.flags }}"
+          -DTEMPO_BUILD_EXAMPLES=OFF
+          -DTEMPO_COUNT_RECURSION=1
+
+      - name: Build and run recursion-counted suite
         env:
-          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
-          TSAN_OPTIONS: halt_on_error=1
-        run: |
-          make clean
-          make run CXX=clang++ DEFINES="-DTEMPO_PRINT_ENABLED=0 -DTEMPO_COUNT_RECURSION=1" \
-            CXXFLAGS="-std=c++20 -Wall -Wextra -Werror -O1 -g -pthread -I.. -I. ${{ matrix.flags }}"
-
-      # The examples are ordinary programs using tempo, and they went uncovered
-      # here for as long as this job existed. They were hiding signed overflow.
-      - name: Run the examples under ${{ matrix.sanitizer }}
-        working-directory: examples
-        env:
-          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
-          TSAN_OPTIONS: halt_on_error=1
-        run: |
-          make run CXX=clang++ \
-            CXXFLAGS="-std=c++20 -Wall -Wextra -Werror -O1 -g -pthread -I.. ${{ matrix.flags }}"
-
-  # tempo claims C++20 and nothing newer. Building under C++23 catches anything
-  # that silently depends on a later rule.
-  standards:
-    name: C++${{ matrix.standard }}
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        standard: [20, 23]
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build and run
-        working-directory: tests
-        run: |
-          make run CXXFLAGS="-std=c++${{ matrix.standard }} -Wall -Wextra -Werror -O2 -pthread -I.. -I."
-
-  # A macOS job used to run here, as a second platform to catch anything that
-  # quietly depends on libstdc++ or on Linux -- type_name() in particular parses
-  # __PRETTY_FUNCTION__, whose spelling differs between compilers and standard
-  # libraries. It is removed for now: it failed intermittently on timing
-  # assertions rather than on anything about Apple Clang, and there is no Apple
-  # hardware here to tell a real portability failure from runner noise.
-  #
-  # To bring it back:
-  #
-  #   macos:
-  #     name: macOS (apple clang)
-  #     runs-on: macos-latest
-  #     steps:
-  #       - uses: actions/checkout@v4
-  #       - name: Build and run the test suite
-  #         working-directory: tests
-  #         run: make run CXX=clang++
-  #       - name: Build and run the examples
-  #         working-directory: examples
-  #         run: make run CXX=clang++
+          ASAN_OPTIONS: ${{ matrix.name == 'AddressSanitizer + UBSan' && 'detect_leaks=0:abort_on_error=1' || '' }}
+          UBSAN_OPTIONS: ${{ matrix.name == 'AddressSanitizer + UBSan' && 'print_stacktrace=1:halt_on_error=1' || '' }}
+          TSAN_OPTIONS: ${{ matrix.name == 'ThreadSanitizer' && 'halt_on_error=1' || '' }}
+        run: cmake --build recursion-build --parallel && ctest --test-dir recursion-build --output-on-failure
