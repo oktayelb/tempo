@@ -149,18 +149,16 @@ TEST(overload_selection_matches_the_arguments) {
 }
 
 TEST(can_construct_answers_at_compile_time) {
-    using Maker = tempo::ConstructorProfiler<Overloaded>;
-
-    static_assert(Maker::can_construct<>);
-    static_assert(Maker::can_construct<int>);
-    static_assert(Maker::can_construct<int, int>);
-    static_assert(Maker::can_construct<std::string>);
-    static_assert(!Maker::can_construct<int, int, int>);
-    static_assert(!Maker::can_construct<std::vector<int>>);
+    static_assert(std::constructible_from<Overloaded>);
+    static_assert(std::constructible_from<Overloaded, int>);
+    static_assert(std::constructible_from<Overloaded, int, int>);
+    static_assert(std::constructible_from<Overloaded, std::string>);
+    static_assert(!std::constructible_from<Overloaded, int, int, int>);
+    static_assert(!std::constructible_from<Overloaded, std::vector<int>>);
 
     // Immovable cannot be built from nothing.
-    static_assert(!tempo::ConstructorProfiler<Immovable>::can_construct<>);
-    static_assert(tempo::ConstructorProfiler<Immovable>::can_construct<int>);
+    static_assert(!std::constructible_from<Immovable>);
+    static_assert(std::constructible_from<Immovable, int>);
 
     CHECK(true);
 }

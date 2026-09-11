@@ -100,12 +100,17 @@ namespace tempo{
 
 using CallCount =  std::uint64_t;
 
-namespace callable_concepts {
+namespace callable_traits {
 
 template <auto Value>
 concept FunctionPointer =
     std::is_pointer_v<decltype(Value)> &&
     std::is_function_v<std::remove_pointer_t<decltype(Value)>>;
+
+template <auto Value>
+concept CallablePointer =
+    FunctionPointer<Value> ||
+    std::is_member_function_pointer_v<decltype(Value)>;
 
 template <typename F>
 concept CallableObject =
@@ -683,7 +688,7 @@ struct FunctionImpl<ret(args...) noexcept, func_ptr>
 } 
 
 template<auto Func>
-requires callable_concepts::FunctionPointer<Func>
+requires callable_traits::FunctionPointer<Func>
 struct Function : function_binding::FunctionImpl<std::remove_pointer_t<decltype(Func)>, Func> {};
 
 namespace method_binding {
@@ -747,7 +752,7 @@ struct Implementation {
 };
 
 template<auto CallableValue>
-requires callable_concepts::FunctionPointer<CallableValue>
+requires callable_traits::FunctionPointer<CallableValue>
 struct Implementation<CallableValue> {
     using Type = Function<CallableValue>;
 };
@@ -763,7 +768,7 @@ struct Implementation<CallableValue> {
 template<auto CallableValue>
 struct Callable : callable_matcher::Implementation<CallableValue>::Type {
 
-    static_assert(callable_concepts::FunctionPointer<CallableValue> ||
+    static_assert(callable_traits::FunctionPointer<CallableValue> ||
                   std::is_member_function_pointer_v<decltype(CallableValue)>,
         TEMPO_NOT_A_CALLABLE_POINTER_MESSAGE);
 
@@ -814,7 +819,7 @@ struct Implementation {
 };
 
 template <typename F>
-requires callable_concepts::CallableObject<F>
+requires callable_traits::CallableObject<F>
 struct Implementation<F> {
     using Type = FunctorImpl<decltype(&F::operator())>;
 };
@@ -824,7 +829,7 @@ struct Implementation<F> {
 template <typename F>
 struct Functor {
 
-    static_assert(callable_concepts::CallableObject<F>,
+    static_assert(callable_traits::CallableObject<F>,
         "tempo: this is not a callable object tempo can read.\n"
         TEMPO_NOT_A_CALLABLE_OBJECT_MESSAGE);
 
@@ -872,7 +877,7 @@ inline constexpr bool is_tempo_wrapper_template = false;
 template <auto V>
 inline constexpr bool is_tempo_wrapper_template<Callable<V>> = true;
 template <auto V>
-    requires callable_concepts::FunctionPointer<V>
+    requires callable_traits::FunctionPointer<V>
 inline constexpr bool is_tempo_wrapper_template<Function<V>> = true;
 template <auto V>
     requires std::is_member_function_pointer_v<decltype(V)>
@@ -1410,37 +1415,40 @@ using CallableMetrics = Metrics<Callable<CallableValue>, WorstCalls>;
 
 template <typename F>
 auto wrap(F&& target) {
-    if constexpr (callable_concepts::CallableObject<std::decay_t<F>>) {
+    if constexpr (callable_traits::CallableObject<std::decay_t<F>>) {
         return Functor<std::decay_t<F>>{std::forward<F>(target)};
     }
     else {
         static_assert(errors::always_false<F>,
             "tempo::wrap: this argument is not a callable object tempo can read.\n"
             TEMPO_NOT_A_CALLABLE_OBJECT_MESSAGE);
+        return errors::UnsupportedCallable{};
     }
 }
 
 template <typename F>
 auto profile(F&& target) {
-    if constexpr (callable_concepts::CallableObject<std::decay_t<F>>) {
+    if constexpr (callable_traits::CallableObject<std::decay_t<F>>) {
         return Profiler<Functor<std::decay_t<F>>>{wrap(std::forward<F>(target))};
     }
     else {
         static_assert(errors::always_false<F>,
             "tempo::profile: this argument is not a callable object tempo can read.\n"
             TEMPO_NOT_A_CALLABLE_OBJECT_MESSAGE);
+        return Profiler<errors::UnsupportedCallable>{{}};
     }
 }
 
 template <std::size_t WorstCalls = TEMPO_WORST_CALLS, typename F>
 auto measure(F&& target) {
-    if constexpr (callable_concepts::CallableObject<std::decay_t<F>>) {
+    if constexpr (callable_traits::CallableObject<std::decay_t<F>>) {
         return Metrics<Functor<std::decay_t<F>>, WorstCalls>{{}, wrap(std::forward<F>(target))};
     }
     else {
         static_assert(errors::always_false<F>,
             "tempo::measure: this argument is not a callable object tempo can read.\n"
             TEMPO_NOT_A_CALLABLE_OBJECT_MESSAGE);
+        return Metrics<errors::UnsupportedCallable, WorstCalls>{{}, {}};
     }
 }
 

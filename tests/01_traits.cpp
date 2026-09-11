@@ -179,12 +179,10 @@ TEST(constructor_profiler_can_construct) {
         Point(int, int) {}
         explicit Point(const std::string&) {}
     };
-    using Maker = tempo::ConstructorProfiler<Point>;
-
-    static_assert(Maker::can_construct<int, int>);
-    static_assert(Maker::can_construct<const std::string&>);
-    static_assert(!Maker::can_construct<int>);
-    static_assert(!Maker::can_construct<>);
-    static_assert(!Maker::can_construct<int, int, int>);
+    static_assert(std::constructible_from<Point, int, int>);
+    static_assert(std::constructible_from<Point, const std::string&>);
+    static_assert(!std::constructible_from<Point, int>);
+    static_assert(!std::constructible_from<Point>);
+    static_assert(!std::constructible_from<Point, int, int, int>);
     CHECK(true);
 }
