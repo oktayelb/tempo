@@ -118,13 +118,13 @@ TEST(entries_come_back_slowest_first) {
     Metrics::reset();
     Metrics metrics;
 
-    // Each sleep is at least double the next, so no plausible amount of noise
-    // can reorder them.
-    metrics(2, 2);
-    metrics(40, 40);
-    metrics(10, 10);
-    metrics(20, 20);
-    metrics(5, 5);
+    // Hosted macOS runners can overshoot short sleeps by surprising amounts, so
+    // the timings are intentionally far apart while the tags stay compact.
+    metrics(1, 2);
+    metrics(160, 40);
+    metrics(40, 10);
+    metrics(80, 20);
+    metrics(10, 5);
 
     const auto ranked = Metrics::worst_calls();
     CHECK_EQ(ranked.size(), 3u);
@@ -142,9 +142,9 @@ TEST(the_head_of_the_ranking_is_the_slowest_call) {
     Metrics::reset();
     Metrics metrics;
 
-    metrics(5, 5);
-    metrics(40, 40);
-    metrics(15, 15);
+    metrics(10, 5);
+    metrics(160, 40);
+    metrics(40, 15);
 
     const auto state = Metrics::snapshot();
     CHECK_EQ(std::get<1>(state.max_args), 40);
@@ -161,9 +161,9 @@ TEST(a_capacity_of_one_still_agrees_with_slowest_args) {
     Metrics::reset();
     Metrics metrics;
 
-    metrics(5, 5);
-    metrics(40, 40);
-    metrics(15, 15);
+    metrics(10, 5);
+    metrics(160, 40);
+    metrics(40, 15);
 
     CHECK_EQ(Metrics::worst_calls().size(), 1u);
     CHECK_EQ(std::get<1>(metrics.slowest_args()), 40);
@@ -176,9 +176,9 @@ TEST(a_capacity_of_zero_still_tracks_the_single_slowest) {
     Metrics::reset();
     Metrics metrics;
 
-    metrics(5, 5);
-    metrics(40, 40);
-    metrics(15, 15);
+    metrics(10, 5);
+    metrics(160, 40);
+    metrics(40, 15);
 
     CHECK_EQ(std::get<1>(metrics.slowest_args()), 40);
     CHECK_EQ(std::get<1>(metrics.fastest_args()), 5);
@@ -191,21 +191,21 @@ TEST(a_slower_call_displaces_the_tail_and_keeps_the_order) {
     Metrics::reset();
     Metrics metrics;
 
-    metrics(40, 40);
-    metrics(20, 20);
-    metrics(10, 10);
+    metrics(160, 40);
+    metrics(80, 20);
+    metrics(40, 10);
     CHECK_EQ(ranked_tags<Metrics>(), (std::vector<int>{40, 20, 10}));
 
     // Lands in the middle: 10 is pushed out, 30 sits between 40 and 20.
-    metrics(30, 30);
+    metrics(120, 30);
     CHECK_EQ(ranked_tags<Metrics>(), (std::vector<int>{40, 30, 20}));
 
     // Faster than every entry: rejected, nothing moves.
-    metrics(2, 2);
+    metrics(1, 2);
     CHECK_EQ(ranked_tags<Metrics>(), (std::vector<int>{40, 30, 20}));
 
     // Slower than every entry: becomes the new head.
-    metrics(80, 80);
+    metrics(320, 80);
     CHECK_EQ(ranked_tags<Metrics>(), (std::vector<int>{80, 40, 30}));
     CHECK_EQ(std::get<1>(metrics.slowest_args()), 80);
 }
@@ -215,7 +215,7 @@ TEST(each_entry_carries_the_call_site_that_produced_it) {
     Metrics::reset();
     Metrics metrics;
 
-    metrics(30, 30);  const auto slow_line = __LINE__;
+    metrics(120, 30); const auto slow_line = __LINE__;
     metrics(1, 1);    const auto fast_line = __LINE__;
 
     const auto ranked = Metrics::worst_calls();
@@ -230,7 +230,7 @@ TEST(reset_clears_the_ranking) {
     Metrics::reset();
     Metrics metrics;
 
-    metrics(20, 20);
+    metrics(80, 20);
     metrics(1, 1);
     CHECK_EQ(Metrics::worst_calls().size(), 2u);
 
@@ -249,10 +249,10 @@ TEST(a_snapshot_carries_the_ranking_it_was_taken_with) {
     Metrics::reset();
     Metrics metrics;
 
-    metrics(20, 20);
+    metrics(80, 20);
     const auto early = Metrics::snapshot();
 
-    metrics(40, 40);
+    metrics(160, 40);
     const auto later = Metrics::snapshot();
 
     // The earlier snapshot is a value, not a view, so it did not change under us.
@@ -302,7 +302,7 @@ TEST(a_method_ranks_its_own_parameters_without_the_instance) {
     Metrics metrics;
     Service service;
 
-    metrics(service, 30, 30);
+    metrics(service, 120, 30);
     metrics(&service, 1, 1);
 
     const auto ranked = Metrics::worst_calls();
