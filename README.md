@@ -109,6 +109,24 @@ cl /std:c++20 /Zc:preprocessor /EHsc /O2 /I path\to\tempo your.cpp
 `/Zc:preprocessor` is required on MSVC when using tempo's variadic macros.
 tempo requires C++20, including `std::source_location`, concepts, and ranges.
 
+### CMake
+
+tempo exports the header-only target `tempo::tempo` when installed:
+
+```cmake
+find_package(tempo CONFIG REQUIRED)
+target_link_libraries(your_program PRIVATE tempo::tempo)
+```
+
+To build, test, and install tempo itself:
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --parallel
+ctest --test-dir build --output-on-failure
+cmake --install build --prefix /your/install/prefix
+```
+
 ## Configuration
 
 Set these compile definitions consistently for every translation unit. They
@@ -147,11 +165,10 @@ auto parse = tempo::measure<25>([](std::string_view line) { /* ... */ });
 
 ## Status and verification
 
-tempo is **0.1.0**: the API is still allowed to change. It is verified on Linux
-with GCC and Clang; CI also runs compile-failure checks, examples, C++20/C++23
-builds, and AddressSanitizer, UndefinedBehaviorSanitizer, and
-ThreadSanitizer. macOS and MSVC are expected to work but are not currently
-verified in CI.
+tempo is **0.1.0**: the API is still allowed to change. CI is configured for
+GCC and Clang on Linux, Apple Clang on macOS, and MSVC on Windows. It also runs
+examples, C++20/C++23 builds, sanitizer jobs, an installed-package consumer
+test, and compile-failure checks on the direct-compiler lanes.
 
 The current suite contains **158 runtime tests and 536 checks**, plus **15**
 intentional compile failures that must emit one readable tempo diagnostic.
