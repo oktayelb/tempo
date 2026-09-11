@@ -1405,55 +1405,43 @@ private:
 
     };
 
-
 template <auto CallableValue, std::size_t WorstCalls = TEMPO_WORST_CALLS>
 using CallableMetrics = Metrics<Callable<CallableValue>, WorstCalls>;
 
-
 template <typename F>
-requires callable_concepts::CallableObject<std::decay_t<F>>
 auto wrap(F&& target) {
-    return Functor<std::decay_t<F>>{std::forward<F>(target)};
+    if constexpr (callable_concepts::CallableObject<std::decay_t<F>>) {
+        return Functor<std::decay_t<F>>{std::forward<F>(target)};
+    }
+    else {
+        static_assert(errors::always_false<F>,
+            "tempo::wrap: this argument is not a callable object tempo can read.\n"
+            TEMPO_NOT_A_CALLABLE_OBJECT_MESSAGE);
+    }
 }
 
 template <typename F>
-requires callable_concepts::CallableObject<std::decay_t<F>>
 auto profile(F&& target) {
-    return Profiler<Functor<std::decay_t<F>>>{wrap(std::forward<F>(target))};
+    if constexpr (callable_concepts::CallableObject<std::decay_t<F>>) {
+        return Profiler<Functor<std::decay_t<F>>>{wrap(std::forward<F>(target))};
+    }
+    else {
+        static_assert(errors::always_false<F>,
+            "tempo::profile: this argument is not a callable object tempo can read.\n"
+            TEMPO_NOT_A_CALLABLE_OBJECT_MESSAGE);
+    }
 }
 
 template <std::size_t WorstCalls = TEMPO_WORST_CALLS, typename F>
-requires callable_concepts::CallableObject<std::decay_t<F>>
 auto measure(F&& target) {
-    return Metrics<Functor<std::decay_t<F>>, WorstCalls>{{}, wrap(std::forward<F>(target))};
-}
-
-
-template <typename F>
-requires (!callable_concepts::CallableObject<std::decay_t<F>>)
-auto wrap(F&&) {
-    static_assert(errors::always_false<F>,
-        "tempo::wrap: this argument is not a callable object tempo can read.\n"
-        TEMPO_NOT_A_CALLABLE_OBJECT_MESSAGE);
-    return errors::UnsupportedCallable{};
-}
-
-template <typename F>
-requires (!callable_concepts::CallableObject<std::decay_t<F>>)
-auto profile(F&&) {
-    static_assert(errors::always_false<F>,
-        "tempo::profile: this argument is not a callable object tempo can read.\n"
-        TEMPO_NOT_A_CALLABLE_OBJECT_MESSAGE);
-    return Profiler<errors::UnsupportedCallable>{{}};
-}
-
-template <std::size_t WorstCalls = TEMPO_WORST_CALLS, typename F>
-requires (!callable_concepts::CallableObject<std::decay_t<F>>)
-auto measure(F&&) {
-    static_assert(errors::always_false<F>,
-        "tempo::measure: this argument is not a callable object tempo can read.\n"
-        TEMPO_NOT_A_CALLABLE_OBJECT_MESSAGE);
-    return Metrics<errors::UnsupportedCallable, WorstCalls>{{}, {}};
+    if constexpr (callable_concepts::CallableObject<std::decay_t<F>>) {
+        return Metrics<Functor<std::decay_t<F>>, WorstCalls>{{}, wrap(std::forward<F>(target))};
+    }
+    else {
+        static_assert(errors::always_false<F>,
+            "tempo::measure: this argument is not a callable object tempo can read.\n"
+            TEMPO_NOT_A_CALLABLE_OBJECT_MESSAGE);
+    }
 }
 
 template <typename ClassType>
@@ -1485,7 +1473,6 @@ private:
     };
     };
  };
-
 
 #undef TEMPO_C_VARIADIC_MESSAGE
 #undef TEMPO_NOT_A_WRAPPER_MESSAGE
