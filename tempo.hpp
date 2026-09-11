@@ -1461,24 +1461,14 @@ auto measure(F&&) {
         TEMPO_NOT_A_CALLABLE_OBJECT_MESSAGE);
     return Metrics<errors::UnsupportedCallable, WorstCalls>{{}, {}};
 }
-namespace construction {
-
-template <typename ClassType>
-concept Class = std::is_class_v<ClassType>;
-
-} 
 
 template <typename ClassType>
 struct ConstructorProfiler{
 
-    static_assert(construction::Class<ClassType>,
+    static_assert(std::is_class_v<ClassType>,
         TEMPO_NOT_A_CLASS_MESSAGE);
 
     inline static std::atomic<CallCount> obj_count{0};
-
-    template <typename... Args>
-    static constexpr bool can_construct = std::constructible_from<ClassType, Args...>;
-
 
     template <typename... Args>
         requires std::constructible_from<ClassType, Args...>
@@ -1486,7 +1476,6 @@ struct ConstructorProfiler{
         [[maybe_unused]] const CountOnSuccess counter{};
         return ClassType(std::forward<Args>(args)...);
         };
-
 
     template <typename... Args>
         requires (!std::constructible_from<ClassType, Args...>)
