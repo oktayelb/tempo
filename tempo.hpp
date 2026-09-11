@@ -1,8 +1,5 @@
 #pragma once
 
-// tempo — Copyright (c) 2026 Oktay Elibüyük
-// Released under the MIT License. See LICENSE for the full terms.
-
 #define TEMPO_VERSION_MAJOR 0
 #define TEMPO_VERSION_MINOR 1
 #define TEMPO_VERSION_PATCH 0
@@ -48,10 +45,6 @@
 #define TEMPO_ENABLED 1
 #endif
 
-// How many of the slowest calls each metric keeps, arguments included.
-// 0 stores none and costs nothing; the single fastest/slowest pair is kept
-// either way. Like the other switches this changes a type, so it is ODR-
-// sensitive: set it on the command line, not per translation unit.
 #ifndef TEMPO_WORST_CALLS
 #define TEMPO_WORST_CALLS 10
 #endif
@@ -99,8 +92,6 @@
     TEMPO_SCOPE_AT_(::std::source_location::current().function_name())
 #define TEMPO_SCOPE_NAMED(name) TEMPO_SCOPE_AT_(name)
 #else
-// Nothing is declared, so the statics never exist and the block is untouched.
-// sizeof keeps a named argument counted as used without evaluating it.
 #define TEMPO_SCOPE() ((void)0)
 #define TEMPO_SCOPE_NAMED(name) ((void)sizeof(name))
 #endif
@@ -128,7 +119,7 @@ concept CallableObject =
     std::is_class_v<F> &&
     requires { &F::operator(); };
 
-} // namespace callable_traits
+} 
 
 
 namespace storage {
@@ -163,7 +154,7 @@ struct ArgsAreNothrowStorable<std::tuple<Ts...>>
           (std::is_nothrow_copy_assignable_v<std::decay_t<Ts>>       && ...) &&
           (std::is_nothrow_move_assignable_v<std::decay_t<Ts>>       && ...)> {};
 
-} // namespace storage
+} 
 
 
 namespace errors {
@@ -346,7 +337,7 @@ struct UnsupportedSignature {
     static constexpr std::size_t total_arg_size = 0;
 };
 
-} // namespace errors
+} 
 
 namespace report {
 
@@ -409,10 +400,6 @@ inline void add_metric(RowFetcher fetcher, Resetter resetter) {
     reg.resetters.push_back(resetter);
 }
 
-// Every registered metric's row, in registration order and including the ones
-// that were never called. print() is this plus filtering, sorting and layout;
-// anything that wants the numbers rather than the table should read this, since
-// the table's spelling is compiler-dependent and not meant to be parsed.
 inline std::vector<Row> collect() {
     std::vector<Row> rows;
     Registry& reg = registry();
@@ -483,21 +470,15 @@ inline void at_exit(std::ostream& out = std::cout) {
         std::ostream* stream;
         ~AtExit() { print(*stream); }
     };
-    static AtExit guard{&out};   // its destructor runs at program exit
+    static AtExit guard{&out};   
     (void)guard;
 }
 
-} // namespace report
+} 
 
 
 namespace scope_timing {
 
-// The block timer behind TEMPO_SCOPE. Tag is a closure type minted by the
-// macro, unique per expansion, so every scope gets its own statics; the object
-// on the stack carries only what one entry needs and the numbers outlive it.
-//
-// Nothing here is meant to be spelled by hand -- the tag has no name you can
-// write. Read the results through tempo::report.
 template <typename Tag>
 struct ScopeTimer {
     using Clock = std::chrono::steady_clock;
@@ -515,16 +496,11 @@ private:
     inline static Duration max_duration{0};
     inline static unsigned int max_depth = 0;
 
-    // Always the same pointer for a given tag -- the macro passes one literal or
-    // one source_location per site -- but written on every entry, so atomic
-    // rather than a plain store several threads race on.
     inline static std::atomic<const char*> label{nullptr};
 
     inline static thread_local unsigned int depth = 0;
     inline static thread_local unsigned int peak_depth = 0;
 
-    // A scope re-entered by recursion must not sum intervals that contain one
-    // another, so only the outermost entry is timed. Every entry is counted.
     static bool enter_depth() {
         const unsigned int current = ++depth;
         if (current == 1) { peak_depth = 1; }
@@ -591,35 +567,28 @@ public:
         label.store(name, std::memory_order_relaxed);
         entry_count.fetch_add(1, std::memory_order_relaxed);
         ensure_registered();
-        // Read last, so registering and counting land outside the measurement.
+        
         if (outermost) { start = Clock::now(); }
     }
 
-    // A scope timer names a region of code; copying or moving one would mean a
-    // second end for a single beginning.
     ScopeTimer(const ScopeTimer&) = delete;
     ScopeTimer& operator=(const ScopeTimer&) = delete;
 
     ~ScopeTimer() {
-        // GCC reads folding a local duration into a static as a dangling store.
-        // Same false positive, same workaround, as Metrics::RecordOnExit below.
+            
 #if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdangling-pointer"
-#endif
-        // First thing, for the same reason start is read last.
+#endif    
         const Clock::time_point stop = outermost ? Clock::now() : Clock::time_point{};
 
         --depth;
-
-        // Left by a throw: the region did not finish, so it is not a sample.
+     
         if (std::uncaught_exceptions() != exceptions_on_entry) { return; }
         if (!outermost) { return; }
 
         const Duration duration = stop - start;
 
-        // Taken only after the clock has stopped, so it never inflates a
-        // measurement and never serialises the code being timed.
         const std::lock_guard<std::mutex> guard{stats_mutex};
 
         if (peak_depth > max_depth) { max_depth = peak_depth; }
@@ -652,7 +621,7 @@ private:
     Clock::time_point start{};
 };
 
-} // namespace scope_timing
+} 
 
 
 namespace wrapper {
@@ -676,7 +645,7 @@ struct WrapperOrStandIn<W> {
     using Type = W;
 };
 
-} // namespace wrapper
+} 
 
 namespace function_binding {
 
@@ -718,7 +687,7 @@ template <typename ret, typename... args, auto func_ptr>
 struct FunctionImpl<ret(args...) noexcept, func_ptr>
     : FunctionBody<func_ptr, true, ret, args...> {};
 
-} // namespace function_binding
+} 
 
 template<auto Func>
 requires callable_traits::FunctionPointer<Func>
@@ -770,7 +739,7 @@ template <typename ClassName, typename ret, typename... args, auto method>
 struct MethodImpl<ret (ClassName::*)(args...) const noexcept, method>
     : MethodBody<method, true, true, ClassName, ret, args...> {};
 
-} // namespace method_binding
+} 
 
 template<auto MethodValue>
 requires callable_traits::MethodPointer<MethodValue>
@@ -796,7 +765,7 @@ struct Implementation<CallableValue> {
     using Type = Method<CallableValue>;
 };
 
-} // namespace callable_matcher
+} 
 
 template<auto CallableValue>
 struct Callable : callable_matcher::Implementation<CallableValue>::Type {
@@ -856,7 +825,7 @@ struct Implementation<F> {
     using Type = FunctorImpl<decltype(&F::operator())>;
 };
 
-} // namespace functor_binding
+} 
 
 template <typename F>
 struct Functor {
@@ -919,7 +888,7 @@ inline constexpr bool is_tempo_wrapper_template<Functor<F>> = true;
 template <>
 inline constexpr bool is_tempo_wrapper_template<errors::UnsupportedCallable> = true;
 
-} // namespace wrapper
+} 
 
 template <typename WrapperType>
 struct Profiler{
@@ -966,7 +935,7 @@ struct Profiler{
 #endif
         }
 
-        // Keep post-call work in a destructor so the call expression returns directly.
+        
         [[maybe_unused]] const ReportOnExit report{};
         return callable(std::forward<decltype(args)>(args)...);
     }
@@ -992,7 +961,7 @@ private:
 
         ~ReportOnExit() {
             if (std::uncaught_exceptions() != exceptions_on_entry) {
-                return; // the call threw, do not report the counter
+                return; 
             }
 #if TEMPO_PRINT_ENABLED
             const std::lock_guard<std::mutex> guard{state_mutex};
@@ -1085,7 +1054,7 @@ using CallOperator = std::conditional_t<
     VariadicCall<Derived, CallableType>,
     SignatureCall<Derived, CallableType>>;
 
-} // namespace call_operators
+} 
 
 
 template <typename WrapperType, std::size_t WorstCalls = TEMPO_WORST_CALLS>
@@ -1123,23 +1092,15 @@ struct Metrics : call_operators::CallOperator<Metrics<WrapperType, WorstCalls>,
         typename storage::DecayedTuple<ArgsType>::Type,
         std::tuple<>>;
 
-    // How many of the slowest calls this metric ranks. Independent of
-    // tracks_args: with capture off the ranking still carries durations and
-    // call sites, and `args` is the empty tuple StoredArgsType already is.
     static constexpr std::size_t worst_capacity = WorstCalls;
     static constexpr bool ranks_worst = WorstCalls > 0;
 
-    // One retained call. Ranked by duration, slowest first.
     struct WorstCall {
         Duration duration{0};
         StoredArgsType args{};
         SourceLocation location{};
     };
-
-    // Ranking overwrites entries, so a noexcept callable must be able to copy
-    // and shift one without throwing. ArgsAreNothrowStorable already demands
-    // exactly that of every parameter; this proves it survived the wrapping.
-    static_assert(!is_noexcept || !ranks_worst ||
+  static_assert(!is_noexcept || !ranks_worst ||
                       (std::is_nothrow_copy_assignable_v<WorstCall> &&
                        std::is_nothrow_move_assignable_v<WorstCall>),
         "tempo: internal -- ranking the slowest calls of a noexcept callable "
@@ -1151,9 +1112,7 @@ private:
 
     inline static std::mutex stats_mutex;
     inline static bool has_samples = false;
-
-    // Sorted descending over [0, worst_size). A zero-length array is a valid
-    // std::array, so an arity of 0 or a capacity of 0 both stay well-formed.
+    
     inline static std::array<WorstCall, WorstCalls> worst{};
     inline static std::size_t worst_size = 0;
 
@@ -1176,14 +1135,13 @@ private:
 
     static bool enter_depth() {
         const unsigned int current = ++depth;
-        // Reset on entry so an unwound recursive call cannot leak its peak.
         if (current == 1) { peak_depth = 1; }
         else if (current > peak_depth) { peak_depth = current; }
         return current == 1;
     }
 
 public:
-    // One locked view, so totals, extremes and arguments describe the same state.
+    
     struct Snapshot {
         CallCount calls = 0;
         Duration total_duration{0};
@@ -1197,17 +1155,13 @@ public:
         unsigned int max_depth = 0;
 
         CallCount timed_calls = 0;
-
-        // Read under the same lock as everything above, so the ranking and the
-        // totals describe the same moment.
         std::array<WorstCall, WorstCalls> worst{};
         std::size_t worst_size = 0;
 
         double average_ms() const {
             return timed_calls ? total_duration.count() / timed_calls : 0.0;
         }
-
-        // Only the entries actually filled, slowest first.
+  
         std::span<const WorstCall> worst_calls() const {
             return std::span<const WorstCall>{worst.data(), worst_size};
         }
@@ -1321,8 +1275,6 @@ public:
         return slowest_args_ref();
     }
 
-    // The slowest calls seen, slowest first. Shorter than worst_capacity until
-    // that many have been timed; empty before the first one.
     static std::vector<WorstCall> worst_calls() {
         static_assert(ranks_worst, TEMPO_NO_WORST_CALLS_MESSAGE);
         const std::lock_guard<std::mutex> guard{stats_mutex};
@@ -1331,12 +1283,6 @@ public:
 
 private:
 
-    // Claims this call's place in the ranking and returns the slot it earned,
-    // or nullptr if it was not slow enough. The arguments are left to the
-    // caller so it can hand the single snapshot to its last consumer by move.
-    //
-    // Called under stats_mutex. Ranking is rare once the table fills, so the
-    // common path is the one comparison against the tail that rejects.
     static WorstCall* rank_worst(Duration duration, SourceLocation location) noexcept {
         if constexpr (!ranks_worst) {
             return nullptr;
@@ -1347,7 +1293,7 @@ private:
                 return nullptr;
             }
 
-            // Displace the tail once full; otherwise grow into the next slot.
+            
             std::size_t slot = worst_size < worst_capacity ? worst_size++
                                                            : worst_capacity - 1;
             for (; slot > 0 && duration > worst[slot - 1].duration; --slot) {
@@ -1360,12 +1306,9 @@ private:
         }
     }
 
-    // The slowest call's arguments. With a ranking that is just its head --
-    // a new maximum always sorts to slot 0 -- so nothing is stored twice.
-    // Called under stats_mutex.
     static const StoredArgsType& slowest_args_ref() noexcept {
         if constexpr (ranks_worst) {
-            return worst_size > 0 ? worst[0].args : max_args;   // empty before the first call
+            return worst_size > 0 ? worst[0].args : max_args;   
         }
         else {
             return max_args;
@@ -1384,7 +1327,7 @@ private:
 
         bool outermost = enter_depth();
 
-        // Inner recursive calls are counted but not timed.
+        
         Clock::time_point start = outermost ? Clock::now() : Clock::time_point{};
 
         ~RecordOnExit() {
@@ -1401,7 +1344,7 @@ private:
             --depth;
 
             if (std::uncaught_exceptions() != exceptions_on_entry) {
-                return; // the call threw, do not record a half-finished duration
+                return; 
             }
 
 
@@ -1425,9 +1368,6 @@ private:
 
             WorstCall* const ranked = rank_worst(duration, location);
 
-            // One snapshot, up to two homes: everything but the last consumer
-            // copies. With a ranking the slowest call lives in slot 0, so
-            // max_args is not a second place to put it.
             if constexpr (tracks_args) {
                 if constexpr (ranks_worst) {
                     if (ranked != nullptr && is_new_min) {
@@ -1488,8 +1428,6 @@ auto profile(F&& target) {
     return Profiler<Functor<std::decay_t<F>>>{wrap(std::forward<F>(target))};
 }
 
-// The count comes first so it can be written without naming the closure type:
-//     auto parse = tempo::measure<25>(my_lambda);
 template <std::size_t WorstCalls = TEMPO_WORST_CALLS, typename F>
 requires callable_traits::CallableObject<std::decay_t<F>>
 auto measure(F&& target) {
@@ -1528,7 +1466,7 @@ namespace construction {
 template <typename ClassType>
 concept Class = std::is_class_v<ClassType>;
 
-} // namespace construction
+} 
 
 template <typename ClassType>
 struct ConstructorProfiler{
@@ -1571,7 +1509,6 @@ private:
  };
 
 
-//#undef so their scope is only within this heaeder
 #undef TEMPO_C_VARIADIC_MESSAGE
 #undef TEMPO_NOT_A_WRAPPER_MESSAGE
 #undef TEMPO_BAD_CALL_ARGUMENTS_MESSAGE
