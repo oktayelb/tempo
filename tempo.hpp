@@ -1471,17 +1471,13 @@ struct ConstructorProfiler{
     inline static std::atomic<CallCount> obj_count{0};
 
     template <typename... Args>
-        requires std::constructible_from<ClassType, Args...>
-    ClassType operator() (Args&&... args) const {
+        requires (!std::constructible_from<ClassType, Args...>)
+    ClassType operator() (Args&&...args) const {
+        static_assert(std::constructible_from<ClassType, Args...>,
+            TEMPO_BAD_CONSTRUCTOR_ARGUMENTS_MESSAGE);
+            
         [[maybe_unused]] const CountOnSuccess counter{};
         return ClassType(std::forward<Args>(args)...);
-        };
-
-    template <typename... Args>
-        requires (!std::constructible_from<ClassType, Args...>)
-    ClassType operator() (Args&&...) const {
-        static_assert(errors::always_false<Args...>,
-            TEMPO_BAD_CONSTRUCTOR_ARGUMENTS_MESSAGE);
     }
 
 private:
