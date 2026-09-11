@@ -100,7 +100,7 @@ namespace tempo{
 
 using CallCount =  std::uint64_t;
 
-namespace callable_traits {
+namespace callable_concepts {
 
 template <auto Value>
 concept FunctionPointer =
@@ -690,7 +690,7 @@ struct FunctionImpl<ret(args...) noexcept, func_ptr>
 } 
 
 template<auto Func>
-requires callable_traits::FunctionPointer<Func>
+requires callable_concepts::FunctionPointer<Func>
 struct Function : function_binding::FunctionImpl<std::remove_pointer_t<decltype(Func)>, Func> {};
 
 namespace method_binding {
@@ -742,7 +742,7 @@ struct MethodImpl<ret (ClassName::*)(args...) const noexcept, method>
 } 
 
 template<auto MethodValue>
-requires callable_traits::MethodPointer<MethodValue>
+requires callable_concepts::MethodPointer<MethodValue>
 struct Method : method_binding::MethodImpl<decltype(MethodValue), MethodValue> {};
 
 
@@ -754,13 +754,13 @@ struct Implementation {
 };
 
 template<auto CallableValue>
-requires callable_traits::FunctionPointer<CallableValue>
+requires callable_concepts::FunctionPointer<CallableValue>
 struct Implementation<CallableValue> {
     using Type = Function<CallableValue>;
 };
 
 template<auto CallableValue>
-requires callable_traits::MethodPointer<CallableValue>
+requires callable_concepts::MethodPointer<CallableValue>
 struct Implementation<CallableValue> {
     using Type = Method<CallableValue>;
 };
@@ -770,7 +770,7 @@ struct Implementation<CallableValue> {
 template<auto CallableValue>
 struct Callable : callable_matcher::Implementation<CallableValue>::Type {
 
-    static_assert(callable_traits::CallablePointer<CallableValue>,
+    static_assert(callable_concepts::CallablePointer<CallableValue>,
         TEMPO_NOT_A_CALLABLE_POINTER_MESSAGE);
 
 
@@ -820,7 +820,7 @@ struct Implementation {
 };
 
 template <typename F>
-requires callable_traits::CallableObject<F>
+requires callable_concepts::CallableObject<F>
 struct Implementation<F> {
     using Type = FunctorImpl<decltype(&F::operator())>;
 };
@@ -830,7 +830,7 @@ struct Implementation<F> {
 template <typename F>
 struct Functor {
 
-    static_assert(callable_traits::CallableObject<F>,
+    static_assert(callable_concepts::CallableObject<F>,
         "tempo: this is not a callable object tempo can read.\n"
         TEMPO_NOT_A_CALLABLE_OBJECT_MESSAGE);
 
@@ -878,10 +878,10 @@ inline constexpr bool is_tempo_wrapper_template = false;
 template <auto V>
 inline constexpr bool is_tempo_wrapper_template<Callable<V>> = true;
 template <auto V>
-    requires callable_traits::FunctionPointer<V>
+    requires callable_concepts::FunctionPointer<V>
 inline constexpr bool is_tempo_wrapper_template<Function<V>> = true;
 template <auto V>
-    requires callable_traits::MethodPointer<V>
+    requires callable_concepts::MethodPointer<V>
 inline constexpr bool is_tempo_wrapper_template<Method<V>> = true;
 template <typename F>
 inline constexpr bool is_tempo_wrapper_template<Functor<F>> = true;
@@ -1417,26 +1417,26 @@ using CallableMetrics = Metrics<Callable<CallableValue>, WorstCalls>;
 
 
 template <typename F>
-requires callable_traits::CallableObject<std::decay_t<F>>
+requires callable_concepts::CallableObject<std::decay_t<F>>
 auto wrap(F&& target) {
     return Functor<std::decay_t<F>>{std::forward<F>(target)};
 }
 
 template <typename F>
-requires callable_traits::CallableObject<std::decay_t<F>>
+requires callable_concepts::CallableObject<std::decay_t<F>>
 auto profile(F&& target) {
     return Profiler<Functor<std::decay_t<F>>>{wrap(std::forward<F>(target))};
 }
 
 template <std::size_t WorstCalls = TEMPO_WORST_CALLS, typename F>
-requires callable_traits::CallableObject<std::decay_t<F>>
+requires callable_concepts::CallableObject<std::decay_t<F>>
 auto measure(F&& target) {
     return Metrics<Functor<std::decay_t<F>>, WorstCalls>{{}, wrap(std::forward<F>(target))};
 }
 
 
 template <typename F>
-requires (!callable_traits::CallableObject<std::decay_t<F>>)
+requires (!callable_concepts::CallableObject<std::decay_t<F>>)
 auto wrap(F&&) {
     static_assert(errors::always_false<F>,
         "tempo::wrap: this argument is not a callable object tempo can read.\n"
@@ -1445,7 +1445,7 @@ auto wrap(F&&) {
 }
 
 template <typename F>
-requires (!callable_traits::CallableObject<std::decay_t<F>>)
+requires (!callable_concepts::CallableObject<std::decay_t<F>>)
 auto profile(F&&) {
     static_assert(errors::always_false<F>,
         "tempo::profile: this argument is not a callable object tempo can read.\n"
@@ -1454,7 +1454,7 @@ auto profile(F&&) {
 }
 
 template <std::size_t WorstCalls = TEMPO_WORST_CALLS, typename F>
-requires (!callable_traits::CallableObject<std::decay_t<F>>)
+requires (!callable_concepts::CallableObject<std::decay_t<F>>)
 auto measure(F&&) {
     static_assert(errors::always_false<F>,
         "tempo::measure: this argument is not a callable object tempo can read.\n"
