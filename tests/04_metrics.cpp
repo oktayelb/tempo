@@ -7,6 +7,7 @@
 
 #include "tempo.hpp"
 #include "tempo_test.hpp"
+#include "tempo_timing.hpp"
 
 #include <chrono>
 #include <sstream>
@@ -15,10 +16,8 @@
 
 namespace {
 
-int sleep_ms(int milliseconds, int tag) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(milliseconds));
-    return tag;
-}
+using tempo_test::busy_ms;
+using tempo_test::Observer;
 
 int cheap(int a, int b) { return a + b; }
 
@@ -27,23 +26,22 @@ int describe(const std::string& label, int value) {
 }
 
 struct Service {
-    int handle(int milliseconds, int tag) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(milliseconds));
-        return tag;
-    }
+    int handle(int milliseconds, int tag) { return busy_ms(milliseconds, tag); }
     int inspect(int value) const { return value; }
 };
 
 }  // namespace
 
 TEST(extremes_track_the_calls_that_produced_them) {
-    using Metrics = TEMPO_CALLABLE_METRICS(sleep_ms);
+    using Metrics = TEMPO_CALLABLE_METRICS(busy_ms);
     Metrics::reset();
     Metrics metrics;
 
-    metrics(12, 101);
-    metrics(2, 102);     // fastest
-    metrics(25, 103);    // slowest
+    // Ordinarily 102 is the fastest of these and 103 the slowest.
+    Observer observer;
+    observer.call(metrics, 12, 101);
+    observer.call(metrics, 2, 102);
+    observer.call(metrics, 25, 103);
 
     const auto stats = Metrics::snapshot();
     CHECK_EQ(stats.calls, 3u);
@@ -51,15 +49,16 @@ TEST(extremes_track_the_calls_that_produced_them) {
     CHECK(stats.has_samples);
 
     // The identifying tag of the fastest and slowest calls, which is the whole
-    // point of the feature.
-    CHECK_EQ(std::get<1>(stats.min_args), 102);
-    CHECK_EQ(std::get<1>(stats.max_args), 103);
-    CHECK_EQ(std::get<0>(stats.min_args), 2);
-    CHECK_EQ(std::get<0>(stats.max_args), 25);
+    // point of the feature -- and the arguments must be the ones from those
+    // same two calls, whichever calls those turned out to be.
+    CHECK_EQ(std::get<1>(stats.min_args), observer.fastest().tag);
+    CHECK_EQ(std::get<1>(stats.max_args), observer.slowest().tag);
+    CHECK_EQ(std::get<0>(stats.min_args), observer.fastest().milliseconds);
+    CHECK_EQ(std::get<0>(stats.max_args), observer.slowest().milliseconds);
 }
 
 TEST(duration_invariants_hold) {
-    using Metrics = TEMPO_CALLABLE_METRICS(sleep_ms);
+    using Metrics = TEMPO_CALLABLE_METRICS(busy_ms);
     Metrics::reset();
     Metrics metrics;
 
@@ -82,7 +81,7 @@ TEST(duration_invariants_hold) {
 }
 
 TEST(a_single_call_is_its_own_minimum_and_maximum) {
-    using Metrics = TEMPO_CALLABLE_METRICS(sleep_ms);
+    using Metrics = TEMPO_CALLABLE_METRICS(busy_ms);
     Metrics::reset();
     Metrics metrics;
 
@@ -97,18 +96,19 @@ TEST(a_single_call_is_its_own_minimum_and_maximum) {
 }
 
 TEST(fastest_and_slowest_args_agree_with_the_snapshot) {
-    using Metrics = TEMPO_CALLABLE_METRICS(sleep_ms);
+    using Metrics = TEMPO_CALLABLE_METRICS(busy_ms);
     Metrics::reset();
     Metrics metrics;
 
-    metrics(8, 201);
-    metrics(1, 202);
+    Observer observer;
+    observer.call(metrics, 8, 201);
+    observer.call(metrics, 1, 202);
 
     const auto stats = Metrics::snapshot();
     CHECK_EQ(std::get<1>(metrics.fastest_args()), std::get<1>(stats.min_args));
     CHECK_EQ(std::get<1>(metrics.slowest_args()), std::get<1>(stats.max_args));
-    CHECK_EQ(std::get<1>(metrics.fastest_args()), 202);
-    CHECK_EQ(std::get<1>(metrics.slowest_args()), 201);
+    CHECK_EQ(std::get<1>(metrics.fastest_args()), observer.fastest().tag);
+    CHECK_EQ(std::get<1>(metrics.slowest_args()), observer.slowest().tag);
 }
 
 TEST(non_trivial_argument_types_are_stored_by_value) {
@@ -133,14 +133,16 @@ TEST(member_functions_are_timed_and_exclude_the_instance_from_args) {
     Metrics metrics;
 
     Service service;
-    metrics(service, 6, 301);
-    metrics(service, 1, 302);
+    // The instance comes first, so these take Observer's general form.
+    Observer observer;
+    observer.call(6, 301, [&] { metrics(service, 6, 301); });
+    observer.call(1, 302, [&] { metrics(service, 1, 302); });
 
     const auto stats = Metrics::snapshot();
     CHECK_EQ(stats.calls, 2u);
     CHECK_EQ(std::tuple_size_v<Metrics::StoredArgsType>, 2u);
-    CHECK_EQ(std::get<1>(stats.min_args), 302);
-    CHECK_EQ(std::get<1>(stats.max_args), 301);
+    CHECK_EQ(std::get<1>(stats.min_args), observer.fastest().tag);
+    CHECK_EQ(std::get<1>(stats.max_args), observer.slowest().tag);
 }
 
 TEST(const_member_functions_work_through_a_const_instance) {

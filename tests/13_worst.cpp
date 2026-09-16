@@ -16,8 +16,8 @@
 
 #include "tempo.hpp"
 #include "tempo_test.hpp"
+#include "tempo_timing.hpp"
 
-#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <memory>
@@ -28,22 +28,8 @@
 
 namespace {
 
-// Occupies the CPU for a given number of milliseconds instead of sleeping.
-//
-// The ordering tests force a ranking by making one call take longer than
-// another, and a sleeping call is the wrong tool for that: the thread has to be
-// woken again, and on a loaded hosted runner that wake-up latency is unbounded.
-// Spinning never asks to be rescheduled, so the floor is the loop rather than
-// the scheduler.
-//
-// steady_clock::now() is an opaque call, so the loop cannot be optimised away.
-int busy_ms(int milliseconds, int tag) {
-    const auto deadline =
-        std::chrono::steady_clock::now() + std::chrono::milliseconds(milliseconds);
-    while (std::chrono::steady_clock::now() < deadline) {
-    }
-    return tag;
-}
+using tempo_test::busy_ms;
+using tempo_test::Observer;
 
 int cheap(int a, int b) { return a + b; }
 
@@ -70,68 +56,6 @@ std::vector<int> ranked_tags() {
     }
     return tags;
 }
-
-// Remembers how long the CALLER saw each call take, so the expected ranking can
-// be derived from the durations that actually happened rather than from the
-// milliseconds that were asked for.
-//
-// That distinction is the whole point. Spinning sets a floor, not a ceiling: on
-// a busy machine the thread is simply not running for part of a call, and a
-// call asked for 3 ms can finish after one asked for 10 ms. When that happens
-// the ranking tempo produced is still correct -- it is the request that stopped
-// describing what happened, and an expectation written as {40, 20, 10} fails
-// while nothing is wrong. Timing from the outside keeps the expectation and the
-// measurement together: a stall inside the call inflates both alike, so the two
-// disagree only over the sliver of wrapper bookkeeping outside tempo's own
-// timer, which is microseconds against gaps of milliseconds.
-struct Observer {
-    using Duration = std::chrono::duration<double, std::milli>;
-
-    struct Call {
-        int tag;
-        Duration duration;
-    };
-
-    std::vector<Call> calls;
-
-    // Times an arbitrary invocation -- used where the metric is a member and
-    // the instance has to come first.
-    template <typename Invoke>
-    void call(int tag, Invoke&& invoke) {
-        const auto start = std::chrono::steady_clock::now();
-        invoke();
-        calls.push_back({tag, std::chrono::steady_clock::now() - start});
-    }
-
-    // The common case: a metric over busy_ms's own (milliseconds, tag).
-    template <typename Metrics>
-    void call(Metrics& metrics, int milliseconds, int tag) {
-        call(tag, [&] { metrics(milliseconds, tag); });
-    }
-
-    // The tags of the `count` slowest calls, slowest first. stable_sort matches
-    // how tempo breaks a tie: rank_worst inserts on a strict >, so a call that
-    // ties an existing entry lands after it, in call order.
-    std::vector<int> slowest(std::size_t count) const {
-        std::vector<Call> ordered = calls;
-        std::stable_sort(ordered.begin(), ordered.end(),
-                         [](const Call& left, const Call& right) {
-                             return left.duration > right.duration;
-                         });
-        ordered.resize(std::min(count, ordered.size()));
-
-        std::vector<int> tags;
-        for (const Call& entry : ordered) { tags.push_back(entry.tag); }
-        return tags;
-    }
-
-    int slowest_tag() const { return slowest(1).front(); }
-
-    int fastest_tag() const {
-        const std::vector<int> ordered = slowest(calls.size());
-        return ordered.back();
-    }
-};
 
 }  // namespace
 
@@ -204,7 +128,7 @@ TEST(entries_come_back_slowest_first) {
 
     const auto ranked = Metrics::worst_calls();
     CHECK_EQ(ranked.size(), 3u);
-    CHECK_EQ(ranked_tags<Metrics>(), observer.slowest(3));
+    CHECK_EQ(ranked_tags<Metrics>(), observer.slowest_tags(3));
 
     // Sorted descending, and consistent with the durations recorded alongside.
     CHECK_GE(ranked[0].duration.count(), ranked[1].duration.count());
@@ -224,13 +148,13 @@ TEST(the_head_of_the_ranking_is_the_slowest_call) {
     observer.call(metrics, 10, 15);
 
     const auto state = Metrics::snapshot();
-    CHECK_EQ(std::get<1>(state.max_args), observer.slowest_tag());
-    CHECK_EQ(std::get<1>(metrics.slowest_args()), observer.slowest_tag());
-    CHECK_EQ(std::get<1>(state.worst_calls()[0].args), observer.slowest_tag());
+    CHECK_EQ(std::get<1>(state.max_args), observer.slowest().tag);
+    CHECK_EQ(std::get<1>(metrics.slowest_args()), observer.slowest().tag);
+    CHECK_EQ(std::get<1>(state.worst_calls()[0].args), observer.slowest().tag);
     CHECK_EQ(state.worst_calls()[0].duration.count(), state.max_duration.count());
 
     // The fastest call is not the ranking's business and is tracked separately.
-    CHECK_EQ(std::get<1>(state.min_args), observer.fastest_tag());
+    CHECK_EQ(std::get<1>(state.min_args), observer.fastest().tag);
 }
 
 TEST(a_capacity_of_one_still_agrees_with_slowest_args) {
@@ -244,8 +168,8 @@ TEST(a_capacity_of_one_still_agrees_with_slowest_args) {
     observer.call(metrics, 10, 15);
 
     CHECK_EQ(Metrics::worst_calls().size(), 1u);
-    CHECK_EQ(std::get<1>(metrics.slowest_args()), observer.slowest_tag());
-    CHECK_EQ(std::get<1>(Metrics::worst_calls()[0].args), observer.slowest_tag());
+    CHECK_EQ(std::get<1>(metrics.slowest_args()), observer.slowest().tag);
+    CHECK_EQ(std::get<1>(Metrics::worst_calls()[0].args), observer.slowest().tag);
 }
 
 TEST(a_capacity_of_zero_still_tracks_the_single_slowest) {
@@ -259,8 +183,8 @@ TEST(a_capacity_of_zero_still_tracks_the_single_slowest) {
     observer.call(metrics, 40, 40);
     observer.call(metrics, 10, 15);
 
-    CHECK_EQ(std::get<1>(metrics.slowest_args()), observer.slowest_tag());
-    CHECK_EQ(std::get<1>(metrics.fastest_args()), observer.fastest_tag());
+    CHECK_EQ(std::get<1>(metrics.slowest_args()), observer.slowest().tag);
+    CHECK_EQ(std::get<1>(metrics.fastest_args()), observer.fastest().tag);
     CHECK_EQ(Metrics::snapshot().calls, 3u);
     CHECK_EQ(Metrics::snapshot().worst_calls().size(), 0u);
 }
@@ -276,20 +200,20 @@ TEST(a_slower_call_displaces_the_tail_and_keeps_the_order) {
     observer.call(metrics, 40, 40);
     observer.call(metrics, 20, 20);
     observer.call(metrics, 10, 10);
-    CHECK_EQ(ranked_tags<Metrics>(), observer.slowest(3));
+    CHECK_EQ(ranked_tags<Metrics>(), observer.slowest_tags(3));
 
     // Lands in the middle: 10 is pushed out, 30 sits between 40 and 20.
     observer.call(metrics, 30, 30);
-    CHECK_EQ(ranked_tags<Metrics>(), observer.slowest(3));
+    CHECK_EQ(ranked_tags<Metrics>(), observer.slowest_tags(3));
 
     // Faster than every entry: rejected, nothing moves.
     observer.call(metrics, 1, 2);
-    CHECK_EQ(ranked_tags<Metrics>(), observer.slowest(3));
+    CHECK_EQ(ranked_tags<Metrics>(), observer.slowest_tags(3));
 
     // Slower than every entry: becomes the new head.
     observer.call(metrics, 80, 80);
-    CHECK_EQ(ranked_tags<Metrics>(), observer.slowest(3));
-    CHECK_EQ(std::get<1>(metrics.slowest_args()), observer.slowest_tag());
+    CHECK_EQ(ranked_tags<Metrics>(), observer.slowest_tags(3));
+    CHECK_EQ(std::get<1>(metrics.slowest_args()), observer.slowest().tag);
 }
 
 TEST(each_entry_carries_the_call_site_that_produced_it) {
@@ -360,7 +284,7 @@ TEST(a_snapshot_carries_the_ranking_it_was_taken_with) {
     CHECK_EQ(early.worst_calls().size(), 1u);
     CHECK_EQ(std::get<1>(early.worst_calls()[0].args), 20);
     CHECK_EQ(later.worst_calls().size(), 2u);
-    CHECK_EQ(std::get<1>(later.worst_calls()[0].args), observer.slowest_tag());
+    CHECK_EQ(std::get<1>(later.worst_calls()[0].args), observer.slowest().tag);
 }
 
 // ---------------------------------------------------------------- arity
@@ -405,13 +329,13 @@ TEST(a_method_ranks_its_own_parameters_without_the_instance) {
 
     // The instance comes first, so these go through Observer's general form.
     Observer observer;
-    observer.call(30, [&] { metrics(service, 30, 30); });
-    observer.call(1, [&] { metrics(&service, 1, 1); });
+    observer.call(30, 30, [&] { metrics(service, 30, 30); });
+    observer.call(1, 1, [&] { metrics(&service, 1, 1); });
 
     const auto ranked = Metrics::worst_calls();
     CHECK_EQ(ranked.size(), 2u);
     CHECK_EQ(std::tuple_size_v<decltype(ranked[0].args)>, 2u);   // not 3
-    CHECK_EQ(ranked_tags<Metrics>(), observer.slowest(2));
+    CHECK_EQ(ranked_tags<Metrics>(), observer.slowest_tags(2));
 }
 
 TEST(a_callable_whose_arguments_cannot_be_captured_still_ranks_durations) {

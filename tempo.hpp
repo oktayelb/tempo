@@ -1187,7 +1187,11 @@ public:
     CallableType callable;
 
 
-    static StoredArgsType make_args_snapshot(const auto&... args) {
+    // [[maybe_unused]]: when this metric does not track arguments the first
+    // branch ignores the whole pack, and MSVC at /W4 reports every parameter of
+    // the instantiation as unreferenced (C4100). It is a warning consumers hit
+    // too, not just tempo's own tests, so the suppression belongs here.
+    static StoredArgsType make_args_snapshot([[maybe_unused]] const auto&... args) {
         if constexpr (!tracks_args) {
             return StoredArgsType{};
         }
@@ -1282,7 +1286,10 @@ public:
 
 private:
 
-    static WorstCall* rank_worst(Duration duration, SourceLocation location) noexcept {
+    // Unused for the same reason as above when the ranking capacity is 0: the
+    // first branch returns before either parameter is read.
+    static WorstCall* rank_worst([[maybe_unused]] Duration duration,
+                                 [[maybe_unused]] SourceLocation location) noexcept {
         if constexpr (!ranks_worst) {
             return nullptr;
         }

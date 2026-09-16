@@ -380,7 +380,9 @@ TEST(const_wrappers_are_callable) {
     // operator() is const, so a const wrapper object must still work.
     using Metrics = TEMPO_CALLABLE_METRICS(returns_without_arguments);
     Metrics::reset();
-    const Metrics metrics;
+    // Braced: a const object left to the implicit default constructor is
+    // MSVC's C4269, and value-initialising it says what was meant anyway.
+    const Metrics metrics{};
 
     CHECK_EQ(metrics(), 99);
     CHECK_EQ(Metrics::snapshot().calls, 1u);
