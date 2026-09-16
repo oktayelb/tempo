@@ -83,6 +83,14 @@ struct Big {
     int identify() const { return static_cast<int>(buffer.size()); }
 };
 
+
+// Long enough on its own to overflow the report's 60-character column, and
+// ending in a marker so a test can tell whether the TAIL of the name survived
+// being cut. Its length is the point; nothing calls it for its result.
+int a_deliberately_long_function_name_that_overflows_the_report_column_marker(int value) {
+    return value;
+}
+
 }  // namespace
 
 // Deliberately short names in a NAMED namespace, for the report test below.
@@ -362,6 +370,36 @@ TEST(report_truncates_absurdly_long_type_names_without_breaking) {
     std::istringstream lines{text};
     std::string line;
     while (std::getline(lines, line)) { CHECK_LT(line.size(), 200u); }
+}
+
+// Truncation must cut the END that nobody needs, not the end that identifies
+// the row. These names are type spellings, and the callable's own name sits at
+// the tail behind a "tempo::Callable<" prefix -- so cutting the tail leaves
+// every wide row reading alike and the report unable to say what it is about.
+// That is not hypothetical: MSVC spells the same type far more verbosely than
+// GCC does, and this is exactly how the Windows report used to come out.
+TEST(a_truncated_row_still_says_which_callable_it_is) {
+    tempo::report::reset_all();
+
+    using Metrics = TEMPO_CALLABLE_METRICS(
+        a_deliberately_long_function_name_that_overflows_the_report_column_marker);
+    Metrics::reset();
+    Metrics metrics;
+    metrics(1);
+
+    // The name really is too wide for the column -- otherwise the truncation
+    // this test is about never happens and it proves nothing.
+    const std::string full =
+        tempo::report::readable_type_name<typename Metrics::CallableType>();
+    CHECK_GT(full.size(), 60u);
+
+    std::ostringstream out;
+    tempo::report::print(out);
+    const std::string text = out.str();
+
+    // It was cut, and what survived is the part naming the callable.
+    CHECK(text.find("...") != std::string::npos);
+    CHECK(text.find("_column_marker") != std::string::npos);
 }
 
 TEST(calling_through_std_function_wrapping_a_wrapper) {

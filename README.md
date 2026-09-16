@@ -150,14 +150,28 @@ auto parse = tempo::measure<25>([](std::string_view line) { /* ... */ });
 
 ## Important limits
 
-- Measure work that is longer than the instrumentation. A nearly empty wrapped
-  call is dominated by clock and bookkeeping overhead.
+- Measure work that is longer than the instrumentation. A wrapped call costs
+  about 37 ns (x86-64 Linux, GCC `-O2`) -- two clock reads and a mutex -- so
+  work under roughly 370 ns is distorted by more than 10%. The ranking is not
+  what costs: `TEMPO_WORST_CALLS=0` measures the same, so turning it off buys
+  nothing.
+- The clock's own resolution is a second floor, and a coarser one on Windows.
+  `std::chrono::steady_clock` resolves to roughly 100 ns there, so a call
+  shorter than one tick is timed as exactly zero. That is a correct measurement
+  of work too short to measure, not a bug -- but it means `total_duration` can
+  read `0.0` after several completed calls. Time a loop of such calls, or put a
+  scope around them, rather than instrumenting each one.
 - Argument capture stores decayed copies for the life of the metric. Do not
   capture sensitive or very large values casually; move-only or otherwise
   unstorable parameters disable argument capture but still allow timing.
-- Statistics are shared by instances of the same wrapper type. In particular,
-  distinct `std::function<int(int)>` instances share metrics; wrap their
-  underlying lambdas instead.
+- Statistics live on the wrapper **type**, not on the wrapper object. Every
+  `CallableMetrics<&f>` in a program shares one set of counters, so the same
+  function cannot be measured in two contexts independently and there is no
+  per-instance or per-request metric. This is what lets `TEMPO_INSTRUMENT`
+  stand in for a function with no storage at the call site, and it is the main
+  thing to know before designing around tempo. Distinct
+  `std::function<int(int)>` objects share one metric for the same reason; wrap
+  their underlying lambdas instead.
 - Supported callables have a concrete, non-overloaded signature. Generic
   lambdas, overloaded call operators/functions, C-style variadics, and
   `volatile` or ref-qualified members are rejected with a diagnostic.
@@ -172,7 +186,7 @@ GCC and Clang on Linux, Apple Clang on macOS, and MSVC on Windows. It also runs
 examples, C++20/C++23 builds, sanitizer jobs, an installed-package consumer
 test, and compile-failure checks on the direct-compiler lanes.
 
-The current suite contains **158 runtime tests and 535 checks**, plus **15**
+The current suite contains **159 runtime tests and 538 checks**, plus **15**
 intentional compile failures that must emit one readable tempo diagnostic.
 
 ```sh
