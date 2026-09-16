@@ -27,6 +27,8 @@ target_include_directories(tempo INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 target_link_libraries(tempo INTERFACE Threads::Threads)
+target_compile_options(tempo INTERFACE
+    $<$<CXX_COMPILER_ID:MSVC>:/Zc:preprocessor>)
 target_compile_definitions(tempo INTERFACE
     TEMPO_ENABLED=${TEMPO_ENABLED}
     TEMPO_PRINT_ENABLED=${TEMPO_PRINT_ENABLED}

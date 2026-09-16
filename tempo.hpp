@@ -1304,7 +1304,7 @@ private:
             return &worst[slot];
         }
     }
-
+    
     static const StoredArgsType& slowest_args_ref() noexcept {
         if constexpr (ranks_worst) {
             return worst_size > 0 ? worst[0].args : max_args;   

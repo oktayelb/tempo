@@ -22,15 +22,22 @@ foreach(source IN LISTS diagnostic_sources)
     endif()
 
     if(TEMPO_CXX_COMPILER_ID STREQUAL "MSVC")
-        set(compiler_arguments /nologo /std:c++20 /Zs "/I${TEMPO_SOURCE_DIR}" "${source}")
+        set(compiler_arguments /nologo /std:c++20 /Zc:preprocessor /Zs "/I${TEMPO_SOURCE_DIR}" "${source}")
         set(error_pattern "[Ee]rror C[0-9]+:")
     else()
         set(compiler_arguments -std=c++20 -fsyntax-only "-I${TEMPO_SOURCE_DIR}" "${source}")
         set(error_pattern "error:")
     endif()
 
+    # The compiler is run under a forced C locale. Both the "error:" count below
+    # and the expected-text search are matched against the compiler's own words,
+    # and a localised toolchain writes them in the developer's language -- a
+    # Turkish GCC says "hata:", so every check here reported zero errors and the
+    # whole test failed on a machine where the library was perfectly fine. CI
+    # runners happen to be C locale, which is why this only ever bit locally.
     execute_process(
-        COMMAND "${TEMPO_CXX_COMPILER}" ${compiler_arguments}
+        COMMAND ${CMAKE_COMMAND} -E env LC_ALL=C LANG=C LANGUAGE=C
+                "${TEMPO_CXX_COMPILER}" ${compiler_arguments}
         RESULT_VARIABLE result
         OUTPUT_VARIABLE stdout
         ERROR_VARIABLE stderr)

@@ -106,7 +106,9 @@ g++ -std=c++20 -O2 -pthread -I/path/to/tempo your.cpp -o your_program
 cl /std:c++20 /Zc:preprocessor /EHsc /O2 /I path\to\tempo your.cpp
 ```
 
-`/Zc:preprocessor` is required on MSVC when using tempo's variadic macros.
+`/Zc:preprocessor` is required on MSVC when using tempo's variadic macros;
+`/std:c++20` does not enable it on its own. The exported `tempo::tempo` target
+adds the flag for you, so this only matters when invoking `cl` by hand.
 tempo requires C++20, including `std::source_location`, concepts, and ranges.
 
 ### CMake
@@ -170,7 +172,7 @@ GCC and Clang on Linux, Apple Clang on macOS, and MSVC on Windows. It also runs
 examples, C++20/C++23 builds, sanitizer jobs, an installed-package consumer
 test, and compile-failure checks on the direct-compiler lanes.
 
-The current suite contains **158 runtime tests and 536 checks**, plus **15**
+The current suite contains **158 runtime tests and 535 checks**, plus **15**
 intentional compile failures that must emit one readable tempo diagnostic.
 
 ```sh
