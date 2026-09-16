@@ -8,6 +8,7 @@
 
 #include "tempo.hpp"
 #include "tempo_test.hpp"
+#include "tempo_timing.hpp"
 
 #include <stdexcept>
 #include <string>
@@ -23,7 +24,15 @@ int always_throws(int) { throw Boom{}; }
 
 int throws_on_negative(int value) {
     if (value < 0) { throw Boom{}; }
-    return value;
+    // The successful path burns a measurable millisecond on purpose.
+    // statistics_survive_a_throw_in_the_middle asserts that the calls which
+    // DID return contributed a positive total, and a bare `return value;` is
+    // not something every clock can see: MSVC's steady_clock ticks at the
+    // performance counter's resolution, roughly 100 ns, and two trivial calls
+    // can complete inside a single tick. The total then reads 0.0 -- a correct
+    // measurement of work too short to measure, and a failure that says
+    // nothing about tempo.
+    return tempo_test::busy_ms(1, value);
 }
 
 struct Service {

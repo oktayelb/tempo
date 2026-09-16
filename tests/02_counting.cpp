@@ -6,6 +6,7 @@
 
 #include "tempo.hpp"
 #include "tempo_test.hpp"
+#include "tempo_timing.hpp"
 
 #include <functional>
 #include <memory>
@@ -144,12 +145,17 @@ TEST(mutable_lambda_state_survives_across_calls) {
 }
 
 TEST(reset_clears_counts_and_statistics) {
-    using Metrics = TEMPO_CALLABLE_METRICS(add);
+    // busy_ms rather than add: this test is about reset clearing a NON-ZERO
+    // total, and two calls to add can finish inside one tick of a coarse clock
+    // (MSVC's steady_clock resolves to about 100 ns), leaving the total at 0.0
+    // before the reset and the check below asserting nothing. The callable is
+    // incidental here; the millisecond is not.
+    using Metrics = TEMPO_CALLABLE_METRICS(tempo_test::busy_ms);
     Metrics::reset();
 
     Metrics metrics;
     metrics(1, 2);
-    metrics(3, 4);
+    metrics(1, 4);
 
     auto before = Metrics::snapshot();
     CHECK_EQ(before.calls, 2u);
