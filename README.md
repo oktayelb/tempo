@@ -188,6 +188,7 @@ test, and compile-failure checks on the direct-compiler lanes.
 
 The current suite contains **159 runtime tests and 538 checks**, plus **15**
 intentional compile failures that must emit one readable tempo diagnostic.
+Release-to-release changes are recorded in the [changelog](CHANGELOG.md).
 
 ```sh
 cd tests
