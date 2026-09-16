@@ -362,6 +362,24 @@ constexpr std::string_view type_name() {
 }
 
 
+// type_name as the report wants it: the compiler's spelling with the
+// calling-convention noise only MSVC emits removed. Both tokens are reserved
+// identifiers, so removing them cannot damage a name the user chose. On GCC and
+// Clang nothing matches and the spelling is returned unchanged.
+template <typename T>
+inline std::string readable_type_name() {
+    std::string name{type_name<T>()};
+    for (const std::string_view noise : {std::string_view{"__cdecl "},
+                                         std::string_view{"__ptr64"}}) {
+        for (std::size_t at = name.find(noise); at != std::string::npos;
+             at = name.find(noise, at)) {
+            name.erase(at, noise.size());
+        }
+    }
+    return name;
+}
+
+
 struct Row {
     std::string name;
     CallCount calls = 0;
@@ -443,7 +461,14 @@ inline void print(std::ostream& out = std::cout) {
 
     for (const auto& row : rows) {
         std::string name = row.name;
-        if (name.size() > width) { name = name.substr(0, width - 3) + "..."; }
+        // Truncate from the LEFT. These names are type spellings, and the part
+        // that identifies the callable -- the function's own name -- sits at
+        // the end, behind a prefix like "tempo::Callable<". MSVC spells the
+        // same type far more verbosely than GCC does, enough that cutting the
+        // tail left every row reading "struct tempo::Callable<&int __cdecl
+        // `anonymous-namespa..." and the report unable to say which callable
+        // any row was about.
+        if (name.size() > width) { name = "..." + name.substr(name.size() - (width - 3)); }
         out << std::left << std::setw(static_cast<int>(width)) << name
             << std::right << std::fixed << std::setprecision(4)
             << std::setw(8)  << row.calls
@@ -1225,7 +1250,7 @@ public:
             report::add_metric(
                 [] {
                     const Snapshot state = snapshot();
-                    return report::Row{std::string{report::type_name<CallableType>()},
+                    return report::Row{report::readable_type_name<CallableType>(),
                                              state.calls,
                                              state.total_duration.count(),
                                              state.min_duration.count(),
